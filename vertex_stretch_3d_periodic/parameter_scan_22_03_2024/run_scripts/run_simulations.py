@@ -488,24 +488,44 @@ if __name__ == "__main__":
     file_name = "../results/export_dump/batch_%d" % slurm_index
     run_parallel = False
     shuffle = True
-    mini_batch_list = np.arange(n_mini_batch)
-    if shuffle:
-        np.random.shuffle(mini_batch_list)
+    full_manual = True
+    if full_manual:
+        mini_batch_list = np.arange(n_mini_batch)
+        if shuffle:
+            np.random.shuffle(mini_batch_list)
 
-    for i in mini_batch_list:
-        if not os.path.exists("../results/statistics_dump/batch_%d_%d.csv"%(slurm_index,i)):
-            range_to_index = range_to_index_total[i::n_mini_batch]
-            if shuffle:
-                np.random.shuffle(range_to_index)
-            TC_i, AL_i, A0_i, PN_i, S_i,total_index_i = TC[range_to_index],AL[range_to_index],A0[range_to_index],PN[range_to_index],S[range_to_index],total_index[range_to_index]
-            if run_parallel:
-                out_dicts = Parallel(n_jobs=-1)(delayed(run_simulation)(T_cortical,alpha,A0,p_notch,file_name,seed,index) for (T_cortical,alpha,A0,p_notch,seed,index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i))
-            else:
-                out_dicts = []
-                for (T_cortical,alpha,A0,p_notch,seed,index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i):
-                    out_dicts += [run_simulation(T_cortical,alpha,A0,p_notch,file_name,seed,index)]
-            df_out = pd.DataFrame(out_dicts)
-            df_out.to_csv("../results/statistics_dump/batch_%d_%d.csv"%(slurm_index,i))
+        for i in mini_batch_list:
+            if not os.path.exists("../results/statistics_dump/batch_%d_%d.csv" % (slurm_index, i)):
+                range_to_index = range_to_index_total[i::n_mini_batch]
+                if shuffle:
+                    np.random.shuffle(range_to_index)
+                TC_i, AL_i, A0_i, PN_i, S_i, total_index_i = TC[range_to_index], AL[range_to_index], A0[range_to_index], \
+                PN[range_to_index], S[range_to_index], total_index[range_to_index]
+                for (T_cortical, alpha, A0, p_notch, seed, index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i):
+                    if not os.path.exists("../results/statistics_dump/index_%d.csv" % (index)):
+                        out_dict = run_simulation(T_cortical, alpha, A0, p_notch, file_name, seed, index)
+                        df_out = pd.DataFrame(out_dict,index=[0])
+                        df_out.to_csv("../results/statistics_dump/index_%d.csv" % (index))
+    else:
+
+        mini_batch_list = np.arange(n_mini_batch)
+        if shuffle:
+            np.random.shuffle(mini_batch_list)
+
+        for i in mini_batch_list:
+            if not os.path.exists("../results/statistics_dump/batch_%d_%d.csv"%(slurm_index,i)):
+                range_to_index = range_to_index_total[i::n_mini_batch]
+                if shuffle:
+                    np.random.shuffle(range_to_index)
+                TC_i, AL_i, A0_i, PN_i, S_i,total_index_i = TC[range_to_index],AL[range_to_index],A0[range_to_index],PN[range_to_index],S[range_to_index],total_index[range_to_index]
+                if run_parallel:
+                    out_dicts = Parallel(n_jobs=-1)(delayed(run_simulation)(T_cortical,alpha,A0,p_notch,file_name,seed,index) for (T_cortical,alpha,A0,p_notch,seed,index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i))
+                else:
+                    out_dicts = []
+                    for (T_cortical,alpha,A0,p_notch,seed,index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i):
+                        out_dicts += [run_simulation(T_cortical,alpha,A0,p_notch,file_name,seed,index)]
+                df_out = pd.DataFrame(out_dicts)
+                df_out.to_csv("../results/statistics_dump/batch_%d_%d.csv"%(slurm_index,i))
     #
     # os.system("tar -zcvf -r ../results/export/batch_%d.tar.gz ../results/export_dump/batch_%d"%(slurm_index,slurm_index))
     # os.system("rm -R ../results/export_dump/batch_%d"%(slurm_index,slurm_index))
