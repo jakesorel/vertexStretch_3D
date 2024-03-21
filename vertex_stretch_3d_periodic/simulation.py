@@ -71,7 +71,7 @@ class Simulation:
         L = self.t.effective_tissue_params["L"]
         k = 0
 
-        for i, tm in enumerate(tqdm(self.sim_params["t_span"])):
+        for i, tm in enumerate(self.sim_params["t_span"]):
             X, L = self.t.update(X, self.sim_params["dt"])
             if (i + 1) % self.simulation_options["t_skip"] == 0 :
                 self.sim_out["X_save"][k] = X.copy()
