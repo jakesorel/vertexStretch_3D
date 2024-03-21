@@ -42,7 +42,7 @@ def run_simulation(T_cortical,alpha,A0,p_notch,file_name,seed,index):
     sim = Simulation(simulation_options, tissue_options, mesh_options)
 
     sim.simulate()
-    tissue_params,mesh_props = sim.t.tissue_params,sim.t.mesh_props
+    tissue_params,mesh_props = sim.t.tissue_params,sim.t.mesh.mesh_props
     tissue_params["L"] = sim.t.effective_tissue_params["L"]
     export_terminal(tissue_params,mesh_props,index,file_name)
     out_dict = extract_statistics(tissue_params,mesh_props)
