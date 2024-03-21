@@ -48,7 +48,7 @@ class Tissue:
         self.tissue_params["n_notch"] = int(np.round(self.tissue_options["p_notch"]*self.mesh.mesh_props["n_c"]))
         self.tissue_params["is_notch"] = np.zeros((int(self.mesh.mesh_props["n_c"])),dtype=np.bool_)
         self.tissue_params["is_notch"][:self.tissue_params["n_notch"]] = True
-        np.random.seed(self.mesh.mesh_props["seed"])
+        np.random.seed(self.mesh.mesh_options["seed"])
         np.random.shuffle(self.tissue_params["is_notch"])
 
     def initialize_energies(self):
