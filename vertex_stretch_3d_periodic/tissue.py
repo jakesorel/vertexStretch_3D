@@ -1,3 +1,9 @@
+import sys
+sys.dont_write_bytecode = True
+import os
+SCRIPT_DIR = "../"
+sys.path.append(os.path.dirname(SCRIPT_DIR))
+
 import numpy as np
 import jax.numpy as jnp
 from jax import jacrev

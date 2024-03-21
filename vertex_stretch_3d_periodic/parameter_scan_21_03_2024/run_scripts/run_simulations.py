@@ -1,3 +1,9 @@
+import sys
+sys.dont_write_bytecode = True
+import os
+SCRIPT_DIR = "../../"
+sys.path.append(os.path.dirname(SCRIPT_DIR))
+
 from vertex_stretch_3d_periodic.simulation import Simulation
 from vertex_stretch_3d_periodic.mesh import assemble_scalar
 import numpy as np
