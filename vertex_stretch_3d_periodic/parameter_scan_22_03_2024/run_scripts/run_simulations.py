@@ -468,10 +468,10 @@ def extract_statistics(tissue_params,mesh_props,index):
 if __name__ == "__main__":
 
     N_param = 12
-    N_iter = 12
-    T_cortical_range = np.linspace(0,0.5,N_param)
+    N_iter = 16
+    T_cortical_range = np.linspace(0,0.3,N_param)
     alpha_range = np.linspace(0,1,N_param)
-    A0_range = np.linspace(2,7,N_param)
+    A0_range = np.linspace(3.5,10,N_param)
     p_notch_range = np.linspace(0.05,0.95,N_param)
     seed_index = np.arange(N_iter)
 
@@ -479,15 +479,15 @@ if __name__ == "__main__":
     S = S.astype(int)
     total_index = np.arange(len(S))
     slurm_index = int(sys.argv[1])
-    N_batch = 864
-    n_batches = 288
-    n_mini_batch = 72
+    N_batch = 432
+    n_batches = 768
+    n_mini_batch = 64
 
     range_to_index_total = np.arange(slurm_index*N_batch,(slurm_index+1)*N_batch)
     mkdir("../results/export_dump/batch_%d" % slurm_index)
     file_name = "../results/export_dump/batch_%d" % slurm_index
-    run_parallel = False
-    shuffle = True
+    run_parallel = True
+    shuffle = False
     mini_batch_list = np.arange(n_mini_batch)
     if shuffle:
         np.random.shuffle(mini_batch_list)
@@ -506,9 +506,9 @@ if __name__ == "__main__":
                     out_dicts += [run_simulation(T_cortical,alpha,A0,p_notch,file_name,seed,index)]
             df_out = pd.DataFrame(out_dicts)
             df_out.to_csv("../results/statistics_dump/batch_%d_%d.csv"%(slurm_index,i))
-
-    os.system("tar -zcvf -r ../results/export/batch_%d.tar.gz ../results/export_dump/batch_%d"%(slurm_index,slurm_index))
-    os.system("rm -R ../results/export_dump/batch_%d"%(slurm_index,slurm_index))
+    #
+    # os.system("tar -zcvf -r ../results/export/batch_%d.tar.gz ../results/export_dump/batch_%d"%(slurm_index,slurm_index))
+    # os.system("rm -R ../results/export_dump/batch_%d"%(slurm_index,slurm_index))
 
     #mkdir("../results")
     #mkdir("../results/export")
