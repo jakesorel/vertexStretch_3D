@@ -506,9 +506,9 @@ if __name__ == "__main__":
                 S_i = S[range_to_index]
                 total_index_i = total_index[range_to_index]
 
-                for (T_cortical, alpha, A0, p_notch, seed, index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i):
+                for (T_cortical, alpha, _A0, p_notch, seed, index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i):
                     if not os.path.exists("../results/statistics_dump/index_%d.csv" % (index)):
-                        out_dict = run_simulation(T_cortical, alpha, A0, p_notch, file_name, seed, index)
+                        out_dict = run_simulation(T_cortical, alpha, _A0, p_notch, file_name, seed, index)
                         df_out = pd.DataFrame(out_dict,index=[0])
                         df_out.to_csv("../results/statistics_dump/index_%d.csv" % (index))
     else:
@@ -532,8 +532,8 @@ if __name__ == "__main__":
                     out_dicts = Parallel(n_jobs=-1)(delayed(run_simulation)(T_cortical,alpha,A0,p_notch,file_name,seed,index) for (T_cortical,alpha,A0,p_notch,seed,index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i))
                 else:
                     out_dicts = []
-                    for (T_cortical,alpha,A0,p_notch,seed,index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i):
-                        out_dicts += [run_simulation(T_cortical,alpha,A0,p_notch,file_name,seed,index)]
+                    for (T_cortical,alpha,_A0,p_notch,seed,index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i):
+                        out_dicts += [run_simulation(T_cortical,alpha,_A0,p_notch,file_name,seed,index)]
                 df_out = pd.DataFrame(out_dicts)
                 df_out.to_csv("../results/statistics_dump/batch_%d_%d.csv"%(slurm_index,i))
     #
