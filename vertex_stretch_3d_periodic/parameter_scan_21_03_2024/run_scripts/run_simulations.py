@@ -21,9 +21,8 @@ def mkdir(path):
         os.mkdir(path)
 
 def run_simulation(T_cortical,alpha,A0,p_notch,file_name,seed,index):
-    try:
-    mesh_options = {"L": 18.4, "A_init": 2., "V_init": 1., "init_noise": 1e-1, "eps": 0.002, "l_mult": 1.05,
-                    "seed":seed+2024}
+    # try:
+    mesh_options = {"L": 18.4, "A_init": 2., "V_init": 1., "init_noise": 1e-1, "eps": 0.002, "l_mult": 1.05,"seed":seed+2024}
     tissue_options = {"kappa_A": (0.02, 0.02),
                       "A0": (A0,A0),
                       "T_lateral": (0., 0. * alpha),
