@@ -486,8 +486,8 @@ if __name__ == "__main__":
     range_to_index_total = np.arange(slurm_index*N_batch,(slurm_index+1)*N_batch)
     mkdir("../results/export_dump/batch_%d" % slurm_index)
     file_name = "../results/export_dump/batch_%d" % slurm_index
-    run_parallel = True
-    shuffle = False
+    run_parallel = False
+    shuffle = True
     mini_batch_list = np.arange(n_mini_batch)
     if shuffle:
         np.random.shuffle(mini_batch_list)
