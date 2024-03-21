@@ -499,8 +499,13 @@ if __name__ == "__main__":
                 range_to_index = range_to_index_total[i::n_mini_batch]
                 if shuffle:
                     np.random.shuffle(range_to_index)
-                TC_i, AL_i, A0_i, PN_i, S_i, total_index_i = TC[range_to_index], AL[range_to_index], A0[range_to_index], \
-                PN[range_to_index], S[range_to_index], total_index[range_to_index]
+                TC_i = TC[range_to_index]
+                AL_i = AL[range_to_index]
+                A0_i = A0[range_to_index]
+                PN_i = PN[range_to_index]
+                S_i = S[range_to_index]
+                total_index_i = total_index[range_to_index]
+
                 for (T_cortical, alpha, A0, p_notch, seed, index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i):
                     if not os.path.exists("../results/statistics_dump/index_%d.csv" % (index)):
                         out_dict = run_simulation(T_cortical, alpha, A0, p_notch, file_name, seed, index)
@@ -517,7 +522,12 @@ if __name__ == "__main__":
                 range_to_index = range_to_index_total[i::n_mini_batch]
                 if shuffle:
                     np.random.shuffle(range_to_index)
-                TC_i, AL_i, A0_i, PN_i, S_i,total_index_i = TC[range_to_index],AL[range_to_index],A0[range_to_index],PN[range_to_index],S[range_to_index],total_index[range_to_index]
+                TC_i = TC[range_to_index]
+                AL_i = AL[range_to_index]
+                A0_i = A0[range_to_index]
+                PN_i= PN[range_to_index]
+                S_i = S[range_to_index]
+                total_index_i = total_index[range_to_index]
                 if run_parallel:
                     out_dicts = Parallel(n_jobs=-1)(delayed(run_simulation)(T_cortical,alpha,A0,p_notch,file_name,seed,index) for (T_cortical,alpha,A0,p_notch,seed,index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i))
                 else:
