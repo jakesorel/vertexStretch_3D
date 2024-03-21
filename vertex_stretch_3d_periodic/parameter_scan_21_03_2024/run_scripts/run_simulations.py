@@ -475,7 +475,7 @@ if __name__ == "__main__":
     TC,AL,A0,PN,S = np.array(np.meshgrid(T_cortical_range,alpha_range,A0_range,p_notch_range,seed_index,indexing="ij")).reshape(5,-1)
     S = S.astype(int)
 
-    slurm_index = sys.argv[1]
+    slurm_index = int(sys.argv[1])
     N_batch = 864
     n_batches = 288
 
