@@ -1,15 +1,18 @@
 import sys
 sys.dont_write_bytecode = True
 import os
-SCRIPT_DIR = "../../../"
+SCRIPT_DIR = "../../"
 sys.path.append(os.path.dirname(SCRIPT_DIR))
 
 from vertex_stretch_3d_periodic.simulation import Simulation,plot_3d
 from vertex_stretch_3d_periodic.mesh import assemble_scalar
+from vertex_stretch_3d_periodic import tri_functions as trf
+
 import numpy as np
 import networkx as nx
 from scipy import sparse
 import pandas as pd
+from copy import deepcopy
 import pickle
 import bz2
 import os
@@ -18,6 +21,7 @@ import matplotlib
 import seaborn as sns
 import sys
 import matplotlib.pyplot as plt
+import numba as nb
 
 def mkdir(path):
     if not os.path.exists(path):
@@ -25,36 +29,188 @@ def mkdir(path):
 
 # T_cortical,alpha,A0,p_notch,file_name,seed = (0.3, 0.0, 6.454545454545455, 0.5, 'results', 3)
 
+
+def mkdir(path):
+    if not os.path.exists(path):
+        os.mkdir(path)
+
+@nb.jit(nopython=True)
+def get_frac_boundary(is_notch,tri,trip1):
+    notch_tri = trf.tri_call(is_notch.astype(np.float32),tri)
+    notch_trip1 = trf.tri_call(is_notch.astype(np.float32),trip1)
+    return (notch_tri * (1-notch_trip1)).sum()/notch_tri.sum()
+
+@nb.jit(nopython=True)
+def random_swap(is_notch,n_c):
+    is_notch_new = is_notch.copy()
+    i,j = int(np.random.random()*n_c), int(np.random.random()*n_c)
+    is_notch_new[i] = is_notch[j]
+    is_notch_new[j] = is_notch[i]
+    return is_notch_new
+
+@nb.jit(nopython=True)
+def perform_swap(E,is_notch,n_c,T,tri,trip1):
+    is_notch_new = random_swap(is_notch,n_c)
+    E_new = get_frac_boundary(is_notch_new,tri,trip1)
+    p_transition = np.exp(-(E_new-E)/T)
+    p = np.random.random()
+    if p < p_transition:
+    # if direc*E_new > direc*E:
+        is_notch = is_notch_new.copy()
+        E = E_new
+    return E,is_notch
+
+
+T_cortical, alpha, A0, p_notch, file_name, seed = (
+0.13, 0.5, 5.2, 0.6, 'results', 3)
+# alpha = 0.4
+L_outs = []
+out_dicts = []
+for p_notch in np.linspace(0.05, 0.5, 4):
+    mesh_options = {"L": 18.4, "A_init": 2., "V_init": 1., "init_noise": 1e-1, "eps": 0.002, "l_mult": 1.05,
+                    "seed": seed + 2024}
+    tissue_options = {"kappa_A": (0.02, 0.02),
+                      "A0": (A0, A0),
+                      "T_lateral": (0., 0. * alpha),
+                      "T_cortical": (T_cortical, T_cortical * alpha),
+                      "T_basal": (0., 0.),
+                      "F_bend": (1., 1.),
+                      "T_external": 0.,
+                      "kappa_V": (1.0, 1.0),
+                      "V0": (1.0, 1.0),
+                      "p_notch": p_notch,
+                      "mu_L": 2.,  ##beware i changed form 0.25
+                      "L_min": 2.,
+                      "max_L_grad": 100}
+    simulation_options = {"dt": 0.02,
+                          "tfin": 30,
+                          "t_skip": 10}
+    sim = Simulation(simulation_options, tissue_options, mesh_options)
+
+    sim.simulate()
+    tissue_params, mesh_props = sim.t.tissue_params, sim.t.mesh.mesh_props
+    tissue_params["L"] = sim.t.effective_tissue_params["L"]
+    plt.plot(sim.sim_out["L_save"])
+    plt.show()
+    # plt.scatter(*sim.t.mesh.mesh_props["R"][:, :2].T, c=sim.t.effective_tissue_params["is_notch"])
+    # plt.show()
+    L_outs.append(tissue_params["L"])
+    print(tissue_params["L"])
+
+    out_dict = extract_statistics(tissue_params, mesh_props, index)
+    out_dicts.append(out_dict)
+
+A_vals = np.zeros((len(out_dicts),2))
+L_vals = np.zeros((len(out_dicts)))
+
+for i, out_dict in enumerate(out_dicts):
+    L = out_dict["L_equilib"]
+    A_vals[i,0] = out_dict["A_P_av"]*L**2
+    A_vals[i,1] = out_dict["A_N_av"]*L**2
+    L_vals[i] = L
+
+fig, ax = plt.subplots()
+ax.plot(np.linspace(0.05, 0.5, 4),A_vals[:,0],label="P")
+ax.plot(np.linspace(0.05, 0.5, 4),A_vals[:,1],label="N")
+ax.legend()
+ax.set(xlabel="pNotch",ylabel="Mean Cell Area")
+fig.show()
+
+
 def run_simulation(T_cortical,alpha,A0,p_notch,file_name,seed,index):
     try:
-        mesh_options = {"L": 18.4, "A_init": 2., "V_init": 1., "init_noise": 1e-1, "eps": 0.002, "l_mult": 1.05,"seed":seed+2024}
-        tissue_options = {"kappa_A": (0.02, 0.02),
-                          "A0": (A0,A0),
-                          "T_lateral": (0., 0. * alpha),
-                          "T_cortical": (T_cortical,T_cortical * alpha),
-                          "T_basal": (0., 0.),
-                          "F_bend": (1., 1.),
-                          "T_external": 0.,
-                          "kappa_V": (3.0, 3.0),
-                          "V0": (1.0, 1.0),
-                          "p_notch": p_notch,
-                          "mu_L": 0.25,
-                          "L_min": 2.,
-                          "max_L_grad":100}
-        simulation_options = {"dt": 0.01,
-                              "tfin": 50,
-                              "t_skip": 1}
-        sim = Simulation(simulation_options, tissue_options, mesh_options)
-        sim.simulate()
+        # alpha = 0.5
+        # A0 = 4.618
+        # T_cortical = 0.109
+        # seed = 1.0
+        # index = 1
+        # p_notch = 0.5
 
-        tissue_params,mesh_props = sim.t.tissue_params,sim.t.mesh.mesh_props
-        tissue_params["L"] = sim.t.effective_tissue_params["L"]
-        if tissue_params["L"]<=tissue_options["L_min"]*1.01:
-            keys = list(["index",'L_equilib', 'total_positive_by_vertex_0', 'total_positive_by_vertex_1', 'total_positive_by_vertex_2', 'total_positive_by_vertex_3', 'A_av', 'A_P_av', 'A_N_av', 'A_std', 'A_P_std', 'A_N_std', 'P_av', 'P_P_av', 'P_N_av', 'P_std', 'P_P_std', 'P_N_std', 'H_av', 'H_P_av', 'H_N_av', 'H_std', 'H_P_std', 'H_N_std', 'ruggedness', 'z_by_positive_av_0', 'z_by_positive_av_1', 'z_by_positive_av_2', 'z_by_positive_av_3', 'z_by_positive_std_0', 'z_by_positive_std_1', 'z_by_positive_std_2', 'z_by_positive_std_3', 'n_notch_neighbours_count_0', 'n_notch_neighbours_count_1', 'n_notch_neighbours_count_2', 'n_notch_neighbours_count_3', 'n_notch_neighbours_count_4', 'n_notch_neighbours_count_5', 'n_notch_neighbours_count_6', 'n_notch_neighbours_count_7', 'n_notch_neighbours_count_8', 'n_notch_neighbours_count_9', 'n_notch_neighbours_count_P_0', 'n_notch_neighbours_count_P_1', 'n_notch_neighbours_count_P_2', 'n_notch_neighbours_count_P_3', 'n_notch_neighbours_count_N_0', 'n_notch_neighbours_count_N_1', 'n_notch_neighbours_count_N_2', 'n_notch_neighbours_count_N_3', 'A_by_notch_neighbours_av_0', 'A_by_notch_neighbours_av_1', 'A_by_notch_neighbours_av_2', 'A_by_notch_neighbours_av_3', 'A_by_notch_neighbours_av_4', 'A_by_notch_neighbours_av_5', 'A_by_notch_neighbours_av_6', 'A_by_notch_neighbours_av_7', 'A_by_notch_neighbours_av_8', 'A_by_notch_neighbours_av_9', 'A_by_notch_neighbours_std_0', 'A_by_notch_neighbours_std_1', 'A_by_notch_neighbours_std_2', 'A_by_notch_neighbours_std_3', 'A_by_notch_neighbours_std_4', 'A_by_notch_neighbours_std_5', 'A_by_notch_neighbours_std_6', 'A_by_notch_neighbours_std_7', 'A_by_notch_neighbours_std_8', 'A_by_notch_neighbours_std_9', 'P_by_notch_neighbours_av_0', 'P_by_notch_neighbours_av_1', 'P_by_notch_neighbours_av_2', 'P_by_notch_neighbours_av_3', 'P_by_notch_neighbours_av_4', 'P_by_notch_neighbours_av_5', 'P_by_notch_neighbours_av_6', 'P_by_notch_neighbours_av_7', 'P_by_notch_neighbours_av_8', 'P_by_notch_neighbours_av_9', 'P_by_notch_neighbours_std_0', 'P_by_notch_neighbours_std_1', 'P_by_notch_neighbours_std_2', 'P_by_notch_neighbours_std_3', 'P_by_notch_neighbours_std_4', 'P_by_notch_neighbours_std_5', 'P_by_notch_neighbours_std_6', 'P_by_notch_neighbours_std_7', 'P_by_notch_neighbours_std_8', 'P_by_notch_neighbours_std_9', 'H_by_notch_neighbours_av_0', 'H_by_notch_neighbours_av_1', 'H_by_notch_neighbours_av_2', 'H_by_notch_neighbours_av_3', 'H_by_notch_neighbours_av_4', 'H_by_notch_neighbours_av_5', 'H_by_notch_neighbours_av_6', 'H_by_notch_neighbours_av_7', 'H_by_notch_neighbours_av_8', 'H_by_notch_neighbours_av_9', 'H_by_notch_neighbours_std_0', 'H_by_notch_neighbours_std_1', 'H_by_notch_neighbours_std_2', 'H_by_notch_neighbours_std_3', 'H_by_notch_neighbours_std_4', 'H_by_notch_neighbours_std_5', 'H_by_notch_neighbours_std_6', 'H_by_notch_neighbours_std_7', 'H_by_notch_neighbours_std_8', 'H_by_notch_neighbours_std_9', 'A_by_notch_neighbours_P_av_0', 'A_by_notch_neighbours_P_av_1', 'A_by_notch_neighbours_P_av_2', 'A_by_notch_neighbours_P_av_3', 'A_by_notch_neighbours_P_av_4', 'A_by_notch_neighbours_P_av_5', 'A_by_notch_neighbours_P_av_6', 'A_by_notch_neighbours_P_av_7', 'A_by_notch_neighbours_P_av_8', 'A_by_notch_neighbours_P_av_9', 'A_by_notch_neighbours_P_std_0', 'A_by_notch_neighbours_P_std_1', 'A_by_notch_neighbours_P_std_2', 'A_by_notch_neighbours_P_std_3', 'A_by_notch_neighbours_P_std_4', 'A_by_notch_neighbours_P_std_5', 'A_by_notch_neighbours_P_std_6', 'A_by_notch_neighbours_P_std_7', 'A_by_notch_neighbours_P_std_8', 'A_by_notch_neighbours_P_std_9', 'P_by_notch_neighbours_P_av_0', 'P_by_notch_neighbours_P_av_1', 'P_by_notch_neighbours_P_av_2', 'P_by_notch_neighbours_P_av_3', 'P_by_notch_neighbours_P_av_4', 'P_by_notch_neighbours_P_av_5', 'P_by_notch_neighbours_P_av_6', 'P_by_notch_neighbours_P_av_7', 'P_by_notch_neighbours_P_av_8', 'P_by_notch_neighbours_P_av_9', 'P_by_notch_neighbours_P_std_0', 'P_by_notch_neighbours_P_std_1', 'P_by_notch_neighbours_P_std_2', 'P_by_notch_neighbours_P_std_3', 'P_by_notch_neighbours_P_std_4', 'P_by_notch_neighbours_P_std_5', 'P_by_notch_neighbours_P_std_6', 'P_by_notch_neighbours_P_std_7', 'P_by_notch_neighbours_P_std_8', 'P_by_notch_neighbours_P_std_9', 'H_by_notch_neighbours_P_av_0', 'H_by_notch_neighbours_P_av_1', 'H_by_notch_neighbours_P_av_2', 'H_by_notch_neighbours_P_av_3', 'H_by_notch_neighbours_P_av_4', 'H_by_notch_neighbours_P_av_5', 'H_by_notch_neighbours_P_av_6', 'H_by_notch_neighbours_P_av_7', 'H_by_notch_neighbours_P_av_8', 'H_by_notch_neighbours_P_av_9', 'H_by_notch_neighbours_P_std_0', 'H_by_notch_neighbours_P_std_1', 'H_by_notch_neighbours_P_std_2', 'H_by_notch_neighbours_P_std_3', 'H_by_notch_neighbours_P_std_4', 'H_by_notch_neighbours_P_std_5', 'H_by_notch_neighbours_P_std_6', 'H_by_notch_neighbours_P_std_7', 'H_by_notch_neighbours_P_std_8', 'H_by_notch_neighbours_P_std_9', 'A_by_notch_neighbours_N_av_0', 'A_by_notch_neighbours_N_av_1', 'A_by_notch_neighbours_N_av_2', 'A_by_notch_neighbours_N_av_3', 'A_by_notch_neighbours_N_av_4', 'A_by_notch_neighbours_N_av_5', 'A_by_notch_neighbours_N_av_6', 'A_by_notch_neighbours_N_av_7', 'A_by_notch_neighbours_N_av_8', 'A_by_notch_neighbours_N_av_9', 'A_by_notch_neighbours_N_std_0', 'A_by_notch_neighbours_N_std_1', 'A_by_notch_neighbours_N_std_2', 'A_by_notch_neighbours_N_std_3', 'A_by_notch_neighbours_N_std_4', 'A_by_notch_neighbours_N_std_5', 'A_by_notch_neighbours_N_std_6', 'A_by_notch_neighbours_N_std_7', 'A_by_notch_neighbours_N_std_8', 'A_by_notch_neighbours_N_std_9', 'P_by_notch_neighbours_N_av_0', 'P_by_notch_neighbours_N_av_1', 'P_by_notch_neighbours_N_av_2', 'P_by_notch_neighbours_N_av_3', 'P_by_notch_neighbours_N_av_4', 'P_by_notch_neighbours_N_av_5', 'P_by_notch_neighbours_N_av_6', 'P_by_notch_neighbours_N_av_7', 'P_by_notch_neighbours_N_av_8', 'P_by_notch_neighbours_N_av_9', 'P_by_notch_neighbours_N_std_0', 'P_by_notch_neighbours_N_std_1', 'P_by_notch_neighbours_N_std_2', 'P_by_notch_neighbours_N_std_3', 'P_by_notch_neighbours_N_std_4', 'P_by_notch_neighbours_N_std_5', 'P_by_notch_neighbours_N_std_6', 'P_by_notch_neighbours_N_std_7', 'P_by_notch_neighbours_N_std_8', 'P_by_notch_neighbours_N_std_9', 'H_by_notch_neighbours_N_av_0', 'H_by_notch_neighbours_N_av_1', 'H_by_notch_neighbours_N_av_2', 'H_by_notch_neighbours_N_av_3', 'H_by_notch_neighbours_N_av_4', 'H_by_notch_neighbours_N_av_5', 'H_by_notch_neighbours_N_av_6', 'H_by_notch_neighbours_N_av_7', 'H_by_notch_neighbours_N_av_8', 'H_by_notch_neighbours_N_av_9', 'H_by_notch_neighbours_N_std_0', 'H_by_notch_neighbours_N_std_1', 'H_by_notch_neighbours_N_std_2', 'H_by_notch_neighbours_N_std_3', 'H_by_notch_neighbours_N_std_4', 'H_by_notch_neighbours_N_std_5', 'H_by_notch_neighbours_N_std_6', 'H_by_notch_neighbours_N_std_7', 'H_by_notch_neighbours_N_std_8', 'H_by_notch_neighbours_N_std_9', 'mean_shortest_path', 'geom_mean_shortest_path', 'median_shortest_path', 'mean_shortest_path_P', 'geom_mean_shortest_path_P', 'median_shortest_path_P', 'mean_shortest_path_N', 'geom_mean_shortest_path_N', 'median_shortest_path_N', 'mean_cluster_size', 'geom_mean_cluster_size', 'median_cluster_size', 'mean_cluster_size_P', 'geom_mean_cluster_size_P', 'median_cluster_size_P', 'mean_cluster_size_N', 'geom_mean_cluster_size_N', 'median_cluster_size_N', 'A_by_shortest_path_av_1', 'A_by_shortest_path_av_2', 'A_by_shortest_path_av_3', 'A_by_shortest_path_av_4', 'A_by_shortest_path_av_5', 'A_by_shortest_path_av_6', 'A_by_shortest_path_std_1', 'A_by_shortest_path_std_2', 'A_by_shortest_path_std_3', 'A_by_shortest_path_std_4', 'A_by_shortest_path_std_5', 'A_by_shortest_path_std_6', 'P_by_shortest_path_av_1', 'P_by_shortest_path_av_2', 'P_by_shortest_path_av_3', 'P_by_shortest_path_av_4', 'P_by_shortest_path_av_5', 'P_by_shortest_path_av_6', 'P_by_shortest_path_std_1', 'P_by_shortest_path_std_2', 'P_by_shortest_path_std_3', 'P_by_shortest_path_std_4', 'P_by_shortest_path_std_5', 'P_by_shortest_path_std_6', 'H_by_shortest_path_av_1', 'H_by_shortest_path_av_2', 'H_by_shortest_path_av_3', 'H_by_shortest_path_av_4', 'H_by_shortest_path_av_5', 'H_by_shortest_path_av_6', 'H_by_shortest_path_std_1', 'H_by_shortest_path_std_2', 'H_by_shortest_path_std_3', 'H_by_shortest_path_std_4', 'H_by_shortest_path_std_5', 'H_by_shortest_path_std_6', 'A_by_shortest_path_P_av_1', 'A_by_shortest_path_P_av_2', 'A_by_shortest_path_P_av_3', 'A_by_shortest_path_P_av_4', 'A_by_shortest_path_P_av_5', 'A_by_shortest_path_P_av_6', 'A_by_shortest_path_P_std_1', 'A_by_shortest_path_P_std_2', 'A_by_shortest_path_P_std_3', 'A_by_shortest_path_P_std_4', 'A_by_shortest_path_P_std_5', 'A_by_shortest_path_P_std_6', 'P_by_shortest_path_P_av_1', 'P_by_shortest_path_P_av_2', 'P_by_shortest_path_P_av_3', 'P_by_shortest_path_P_av_4', 'P_by_shortest_path_P_av_5', 'P_by_shortest_path_P_av_6', 'P_by_shortest_path_P_std_1', 'P_by_shortest_path_P_std_2', 'P_by_shortest_path_P_std_3', 'P_by_shortest_path_P_std_4', 'P_by_shortest_path_P_std_5', 'P_by_shortest_path_P_std_6', 'H_by_shortest_path_P_av_1', 'H_by_shortest_path_P_av_2', 'H_by_shortest_path_P_av_3', 'H_by_shortest_path_P_av_4', 'H_by_shortest_path_P_av_5', 'H_by_shortest_path_P_av_6', 'H_by_shortest_path_P_std_1', 'H_by_shortest_path_P_std_2', 'H_by_shortest_path_P_std_3', 'H_by_shortest_path_P_std_4', 'H_by_shortest_path_P_std_5', 'H_by_shortest_path_P_std_6', 'A_by_shortest_path_N_av_1', 'A_by_shortest_path_N_av_2', 'A_by_shortest_path_N_av_3', 'A_by_shortest_path_N_av_4', 'A_by_shortest_path_N_av_5', 'A_by_shortest_path_N_av_6', 'A_by_shortest_path_N_std_1', 'A_by_shortest_path_N_std_2', 'A_by_shortest_path_N_std_3', 'A_by_shortest_path_N_std_4', 'A_by_shortest_path_N_std_5', 'A_by_shortest_path_N_std_6', 'P_by_shortest_path_N_av_1', 'P_by_shortest_path_N_av_2', 'P_by_shortest_path_N_av_3', 'P_by_shortest_path_N_av_4', 'P_by_shortest_path_N_av_5', 'P_by_shortest_path_N_av_6', 'P_by_shortest_path_N_std_1', 'P_by_shortest_path_N_std_2', 'P_by_shortest_path_N_std_3', 'P_by_shortest_path_N_std_4', 'P_by_shortest_path_N_std_5', 'P_by_shortest_path_N_std_6', 'H_by_shortest_path_N_av_1', 'H_by_shortest_path_N_av_2', 'H_by_shortest_path_N_av_3', 'H_by_shortest_path_N_av_4', 'H_by_shortest_path_N_av_5', 'H_by_shortest_path_N_av_6', 'H_by_shortest_path_N_std_1', 'H_by_shortest_path_N_std_2', 'H_by_shortest_path_N_std_3', 'H_by_shortest_path_N_std_4', 'H_by_shortest_path_N_std_5', 'H_by_shortest_path_N_std_6', 'A_by_n_cc_av_1', 'A_by_n_cc_av_2', 'A_by_n_cc_av_3', 'A_by_n_cc_av_4', 'A_by_n_cc_av_5', 'A_by_n_cc_av_6', 'A_by_n_cc_av_7', 'A_by_n_cc_av_8', 'A_by_n_cc_std_1', 'A_by_n_cc_std_2', 'A_by_n_cc_std_3', 'A_by_n_cc_std_4', 'A_by_n_cc_std_5', 'A_by_n_cc_std_6', 'A_by_n_cc_std_7', 'A_by_n_cc_std_8', 'P_by_n_cc_av_1', 'P_by_n_cc_av_2', 'P_by_n_cc_av_3', 'P_by_n_cc_av_4', 'P_by_n_cc_av_5', 'P_by_n_cc_av_6', 'P_by_n_cc_av_7', 'P_by_n_cc_av_8', 'P_by_n_cc_std_1', 'P_by_n_cc_std_2', 'P_by_n_cc_std_3', 'P_by_n_cc_std_4', 'P_by_n_cc_std_5', 'P_by_n_cc_std_6', 'P_by_n_cc_std_7', 'P_by_n_cc_std_8', 'H_by_n_cc_av_1', 'H_by_n_cc_av_2', 'H_by_n_cc_av_3', 'H_by_n_cc_av_4', 'H_by_n_cc_av_5', 'H_by_n_cc_av_6', 'H_by_n_cc_av_7', 'H_by_n_cc_av_8', 'H_by_n_cc_std_1', 'H_by_n_cc_std_2', 'H_by_n_cc_std_3', 'H_by_n_cc_std_4', 'H_by_n_cc_std_5', 'H_by_n_cc_std_6', 'H_by_n_cc_std_7', 'H_by_n_cc_std_8', 'A_by_n_cc_P_av_1', 'A_by_n_cc_P_av_2', 'A_by_n_cc_P_av_3', 'A_by_n_cc_P_av_4', 'A_by_n_cc_P_av_5', 'A_by_n_cc_P_av_6', 'A_by_n_cc_P_av_7', 'A_by_n_cc_P_av_8', 'A_by_n_cc_P_std_1', 'A_by_n_cc_P_std_2', 'A_by_n_cc_P_std_3', 'A_by_n_cc_P_std_4', 'A_by_n_cc_P_std_5', 'A_by_n_cc_P_std_6', 'A_by_n_cc_P_std_7', 'A_by_n_cc_P_std_8', 'P_by_n_cc_P_av_1', 'P_by_n_cc_P_av_2', 'P_by_n_cc_P_av_3', 'P_by_n_cc_P_av_4', 'P_by_n_cc_P_av_5', 'P_by_n_cc_P_av_6', 'P_by_n_cc_P_av_7', 'P_by_n_cc_P_av_8', 'P_by_n_cc_P_std_1', 'P_by_n_cc_P_std_2', 'P_by_n_cc_P_std_3', 'P_by_n_cc_P_std_4', 'P_by_n_cc_P_std_5', 'P_by_n_cc_P_std_6', 'P_by_n_cc_P_std_7', 'P_by_n_cc_P_std_8', 'H_by_n_cc_P_av_1', 'H_by_n_cc_P_av_2', 'H_by_n_cc_P_av_3', 'H_by_n_cc_P_av_4', 'H_by_n_cc_P_av_5', 'H_by_n_cc_P_av_6', 'H_by_n_cc_P_av_7', 'H_by_n_cc_P_av_8', 'H_by_n_cc_P_std_1', 'H_by_n_cc_P_std_2', 'H_by_n_cc_P_std_3', 'H_by_n_cc_P_std_4', 'H_by_n_cc_P_std_5', 'H_by_n_cc_P_std_6', 'H_by_n_cc_P_std_7', 'H_by_n_cc_P_std_8', 'A_by_n_cc_N_av_1', 'A_by_n_cc_N_av_2', 'A_by_n_cc_N_av_3', 'A_by_n_cc_N_av_4', 'A_by_n_cc_N_av_5', 'A_by_n_cc_N_av_6', 'A_by_n_cc_N_av_7', 'A_by_n_cc_N_av_8', 'A_by_n_cc_N_std_1', 'A_by_n_cc_N_std_2', 'A_by_n_cc_N_std_3', 'A_by_n_cc_N_std_4', 'A_by_n_cc_N_std_5', 'A_by_n_cc_N_std_6', 'A_by_n_cc_N_std_7', 'A_by_n_cc_N_std_8', 'P_by_n_cc_N_av_1', 'P_by_n_cc_N_av_2', 'P_by_n_cc_N_av_3', 'P_by_n_cc_N_av_4', 'P_by_n_cc_N_av_5', 'P_by_n_cc_N_av_6', 'P_by_n_cc_N_av_7', 'P_by_n_cc_N_av_8', 'P_by_n_cc_N_std_1', 'P_by_n_cc_N_std_2', 'P_by_n_cc_N_std_3', 'P_by_n_cc_N_std_4', 'P_by_n_cc_N_std_5', 'P_by_n_cc_N_std_6', 'P_by_n_cc_N_std_7', 'P_by_n_cc_N_std_8', 'H_by_n_cc_N_av_1', 'H_by_n_cc_N_av_2', 'H_by_n_cc_N_av_3', 'H_by_n_cc_N_av_4', 'H_by_n_cc_N_av_5', 'H_by_n_cc_N_av_6', 'H_by_n_cc_N_av_7', 'H_by_n_cc_N_av_8', 'H_by_n_cc_N_std_1', 'H_by_n_cc_N_std_2', 'H_by_n_cc_N_std_3', 'H_by_n_cc_N_std_4', 'H_by_n_cc_N_std_5', 'H_by_n_cc_N_std_6', 'H_by_n_cc_N_std_7', 'H_by_n_cc_N_std_8'])
-            out_dict = dict(zip(keys,np.ones(len(keys))*np.nan))
-            out_dict["index"] = index
-        out_dict = extract_statistics(tissue_params,mesh_props,index)
-        export_terminal(tissue_params,mesh_props,index,file_name)
+
+
+        N_set = 6
+        n_c = int(sim.t.mesh.mesh_props["n_c"])
+        tri = np.array(sim.t.mesh.mesh_props["tri"])
+        trip1 = np.roll(tri, 1, axis=1)
+        mesh_props = sim.t.mesh.mesh_props
+        edges = np.row_stack(
+            [np.column_stack([mesh_props["tri"][:, i], mesh_props["tri"][:, (i + 1) % 3]]) for i in
+             range(3)])
+
+        n_iter = 30000
+        is_notchs = []
+        gt_clusters = np.zeros((n_iter,2))
+        for i in tqdm(range(n_iter)):
+
+            is_notch = np.zeros(n_c, dtype=bool)
+            is_notch[:int(np.round(p_notch * n_c))] = True
+            np.random.shuffle(is_notch)
+            is_notchs.append(is_notch.copy())
+            ##Calculate the adjacency matrix
+
+            is_notch_int = is_notch.astype(int)
+            is_notch_edges = is_notch_int[edges]
+
+            adj_notch = sparse.coo_matrix((np.ones((is_notch_edges[:, 0] == is_notch_edges[:, 1]).sum(), dtype=int), (
+            edges[(is_notch_edges[:, 0] == is_notch_edges[:, 1]), 0],
+            edges[(is_notch_edges[:, 0] == is_notch_edges[:, 1]), 1])),
+                                          shape=(int(mesh_props["n_c"]), int(mesh_props["n_c"])))
+
+            n_cc, cc_labs = sparse.csgraph.connected_components(adj_notch)
+            gt_cluster_pos = np.bincount(cc_labs[is_notch]).max()
+            gt_cluster_neg = np.bincount(cc_labs[~is_notch]).max()
+            gt_clusters[i] = gt_cluster_pos,gt_cluster_neg
+
+        N_set = 5
+        is_notch_indices = [np.nonzero(np.diff(gt_clusters,axis=1).ravel() == np.percentile(np.diff(gt_clusters,axis=1).ravel(),p))[0][0] for p in np.linspace(0,100,N_set)]
+
+        is_notch_sets = [is_notchs[i] for i in is_notch_indices]
+
+        plt.scatter(*sim.t.mesh.mesh_props["R"][:,:2].T,c=is_notch_sets[0])
+        plt.show()
+
+        mesh_props_deepcopy = deepcopy(sim.t.mesh.mesh_props)
+        L_outs = []
+        out_dicts = []
+        for i, is_notch in enumerate(is_notch_sets):
+            sim = Simulation(simulation_options, tissue_options, mesh_options)
+            sim.t.mesh.mesh_props = deepcopy(mesh_props_deepcopy)
+            sim.t.tissue_params["is_notch"] = is_notch
+            sim.t.assign_tissue_parameters()
+            sim.t.initialize_energies()
+            sim.t.update_effective_tissue_params()
+            sim.simulate()
+            tissue_params,mesh_props = sim.t.tissue_params,sim.t.mesh.mesh_props
+            tissue_params["L"] = sim.t.effective_tissue_params["L"]
+            # plt.scatter(*sim.t.mesh.mesh_props["R"][:, :2].T, c=sim.t.effective_tissue_params["is_notch"])
+            # plt.show()
+            L_outs.append(tissue_params["L"])
+            print(tissue_params["L"])
+            if tissue_params["L"]<=tissue_options["L_min"]*1.01:
+                keys = list(["index",'L_equilib', 'total_positive_by_vertex_0', 'total_positive_by_vertex_1', 'total_positive_by_vertex_2', 'total_positive_by_vertex_3', 'A_av', 'A_P_av', 'A_N_av', 'A_std', 'A_P_std', 'A_N_std', 'P_av', 'P_P_av', 'P_N_av', 'P_std', 'P_P_std', 'P_N_std', 'H_av', 'H_P_av', 'H_N_av', 'H_std', 'H_P_std', 'H_N_std', 'ruggedness', 'z_by_positive_av_0', 'z_by_positive_av_1', 'z_by_positive_av_2', 'z_by_positive_av_3', 'z_by_positive_std_0', 'z_by_positive_std_1', 'z_by_positive_std_2', 'z_by_positive_std_3', 'n_notch_neighbours_count_0', 'n_notch_neighbours_count_1', 'n_notch_neighbours_count_2', 'n_notch_neighbours_count_3', 'n_notch_neighbours_count_4', 'n_notch_neighbours_count_5', 'n_notch_neighbours_count_6', 'n_notch_neighbours_count_7', 'n_notch_neighbours_count_8', 'n_notch_neighbours_count_9', 'n_notch_neighbours_count_P_0', 'n_notch_neighbours_count_P_1', 'n_notch_neighbours_count_P_2', 'n_notch_neighbours_count_P_3', 'n_notch_neighbours_count_N_0', 'n_notch_neighbours_count_N_1', 'n_notch_neighbours_count_N_2', 'n_notch_neighbours_count_N_3', 'A_by_notch_neighbours_av_0', 'A_by_notch_neighbours_av_1', 'A_by_notch_neighbours_av_2', 'A_by_notch_neighbours_av_3', 'A_by_notch_neighbours_av_4', 'A_by_notch_neighbours_av_5', 'A_by_notch_neighbours_av_6', 'A_by_notch_neighbours_av_7', 'A_by_notch_neighbours_av_8', 'A_by_notch_neighbours_av_9', 'A_by_notch_neighbours_std_0', 'A_by_notch_neighbours_std_1', 'A_by_notch_neighbours_std_2', 'A_by_notch_neighbours_std_3', 'A_by_notch_neighbours_std_4', 'A_by_notch_neighbours_std_5', 'A_by_notch_neighbours_std_6', 'A_by_notch_neighbours_std_7', 'A_by_notch_neighbours_std_8', 'A_by_notch_neighbours_std_9', 'P_by_notch_neighbours_av_0', 'P_by_notch_neighbours_av_1', 'P_by_notch_neighbours_av_2', 'P_by_notch_neighbours_av_3', 'P_by_notch_neighbours_av_4', 'P_by_notch_neighbours_av_5', 'P_by_notch_neighbours_av_6', 'P_by_notch_neighbours_av_7', 'P_by_notch_neighbours_av_8', 'P_by_notch_neighbours_av_9', 'P_by_notch_neighbours_std_0', 'P_by_notch_neighbours_std_1', 'P_by_notch_neighbours_std_2', 'P_by_notch_neighbours_std_3', 'P_by_notch_neighbours_std_4', 'P_by_notch_neighbours_std_5', 'P_by_notch_neighbours_std_6', 'P_by_notch_neighbours_std_7', 'P_by_notch_neighbours_std_8', 'P_by_notch_neighbours_std_9', 'H_by_notch_neighbours_av_0', 'H_by_notch_neighbours_av_1', 'H_by_notch_neighbours_av_2', 'H_by_notch_neighbours_av_3', 'H_by_notch_neighbours_av_4', 'H_by_notch_neighbours_av_5', 'H_by_notch_neighbours_av_6', 'H_by_notch_neighbours_av_7', 'H_by_notch_neighbours_av_8', 'H_by_notch_neighbours_av_9', 'H_by_notch_neighbours_std_0', 'H_by_notch_neighbours_std_1', 'H_by_notch_neighbours_std_2', 'H_by_notch_neighbours_std_3', 'H_by_notch_neighbours_std_4', 'H_by_notch_neighbours_std_5', 'H_by_notch_neighbours_std_6', 'H_by_notch_neighbours_std_7', 'H_by_notch_neighbours_std_8', 'H_by_notch_neighbours_std_9', 'A_by_notch_neighbours_P_av_0', 'A_by_notch_neighbours_P_av_1', 'A_by_notch_neighbours_P_av_2', 'A_by_notch_neighbours_P_av_3', 'A_by_notch_neighbours_P_av_4', 'A_by_notch_neighbours_P_av_5', 'A_by_notch_neighbours_P_av_6', 'A_by_notch_neighbours_P_av_7', 'A_by_notch_neighbours_P_av_8', 'A_by_notch_neighbours_P_av_9', 'A_by_notch_neighbours_P_std_0', 'A_by_notch_neighbours_P_std_1', 'A_by_notch_neighbours_P_std_2', 'A_by_notch_neighbours_P_std_3', 'A_by_notch_neighbours_P_std_4', 'A_by_notch_neighbours_P_std_5', 'A_by_notch_neighbours_P_std_6', 'A_by_notch_neighbours_P_std_7', 'A_by_notch_neighbours_P_std_8', 'A_by_notch_neighbours_P_std_9', 'P_by_notch_neighbours_P_av_0', 'P_by_notch_neighbours_P_av_1', 'P_by_notch_neighbours_P_av_2', 'P_by_notch_neighbours_P_av_3', 'P_by_notch_neighbours_P_av_4', 'P_by_notch_neighbours_P_av_5', 'P_by_notch_neighbours_P_av_6', 'P_by_notch_neighbours_P_av_7', 'P_by_notch_neighbours_P_av_8', 'P_by_notch_neighbours_P_av_9', 'P_by_notch_neighbours_P_std_0', 'P_by_notch_neighbours_P_std_1', 'P_by_notch_neighbours_P_std_2', 'P_by_notch_neighbours_P_std_3', 'P_by_notch_neighbours_P_std_4', 'P_by_notch_neighbours_P_std_5', 'P_by_notch_neighbours_P_std_6', 'P_by_notch_neighbours_P_std_7', 'P_by_notch_neighbours_P_std_8', 'P_by_notch_neighbours_P_std_9', 'H_by_notch_neighbours_P_av_0', 'H_by_notch_neighbours_P_av_1', 'H_by_notch_neighbours_P_av_2', 'H_by_notch_neighbours_P_av_3', 'H_by_notch_neighbours_P_av_4', 'H_by_notch_neighbours_P_av_5', 'H_by_notch_neighbours_P_av_6', 'H_by_notch_neighbours_P_av_7', 'H_by_notch_neighbours_P_av_8', 'H_by_notch_neighbours_P_av_9', 'H_by_notch_neighbours_P_std_0', 'H_by_notch_neighbours_P_std_1', 'H_by_notch_neighbours_P_std_2', 'H_by_notch_neighbours_P_std_3', 'H_by_notch_neighbours_P_std_4', 'H_by_notch_neighbours_P_std_5', 'H_by_notch_neighbours_P_std_6', 'H_by_notch_neighbours_P_std_7', 'H_by_notch_neighbours_P_std_8', 'H_by_notch_neighbours_P_std_9', 'A_by_notch_neighbours_N_av_0', 'A_by_notch_neighbours_N_av_1', 'A_by_notch_neighbours_N_av_2', 'A_by_notch_neighbours_N_av_3', 'A_by_notch_neighbours_N_av_4', 'A_by_notch_neighbours_N_av_5', 'A_by_notch_neighbours_N_av_6', 'A_by_notch_neighbours_N_av_7', 'A_by_notch_neighbours_N_av_8', 'A_by_notch_neighbours_N_av_9', 'A_by_notch_neighbours_N_std_0', 'A_by_notch_neighbours_N_std_1', 'A_by_notch_neighbours_N_std_2', 'A_by_notch_neighbours_N_std_3', 'A_by_notch_neighbours_N_std_4', 'A_by_notch_neighbours_N_std_5', 'A_by_notch_neighbours_N_std_6', 'A_by_notch_neighbours_N_std_7', 'A_by_notch_neighbours_N_std_8', 'A_by_notch_neighbours_N_std_9', 'P_by_notch_neighbours_N_av_0', 'P_by_notch_neighbours_N_av_1', 'P_by_notch_neighbours_N_av_2', 'P_by_notch_neighbours_N_av_3', 'P_by_notch_neighbours_N_av_4', 'P_by_notch_neighbours_N_av_5', 'P_by_notch_neighbours_N_av_6', 'P_by_notch_neighbours_N_av_7', 'P_by_notch_neighbours_N_av_8', 'P_by_notch_neighbours_N_av_9', 'P_by_notch_neighbours_N_std_0', 'P_by_notch_neighbours_N_std_1', 'P_by_notch_neighbours_N_std_2', 'P_by_notch_neighbours_N_std_3', 'P_by_notch_neighbours_N_std_4', 'P_by_notch_neighbours_N_std_5', 'P_by_notch_neighbours_N_std_6', 'P_by_notch_neighbours_N_std_7', 'P_by_notch_neighbours_N_std_8', 'P_by_notch_neighbours_N_std_9', 'H_by_notch_neighbours_N_av_0', 'H_by_notch_neighbours_N_av_1', 'H_by_notch_neighbours_N_av_2', 'H_by_notch_neighbours_N_av_3', 'H_by_notch_neighbours_N_av_4', 'H_by_notch_neighbours_N_av_5', 'H_by_notch_neighbours_N_av_6', 'H_by_notch_neighbours_N_av_7', 'H_by_notch_neighbours_N_av_8', 'H_by_notch_neighbours_N_av_9', 'H_by_notch_neighbours_N_std_0', 'H_by_notch_neighbours_N_std_1', 'H_by_notch_neighbours_N_std_2', 'H_by_notch_neighbours_N_std_3', 'H_by_notch_neighbours_N_std_4', 'H_by_notch_neighbours_N_std_5', 'H_by_notch_neighbours_N_std_6', 'H_by_notch_neighbours_N_std_7', 'H_by_notch_neighbours_N_std_8', 'H_by_notch_neighbours_N_std_9', 'mean_shortest_path', 'geom_mean_shortest_path', 'median_shortest_path', 'mean_shortest_path_P', 'geom_mean_shortest_path_P', 'median_shortest_path_P', 'mean_shortest_path_N', 'geom_mean_shortest_path_N', 'median_shortest_path_N', 'mean_cluster_size', 'geom_mean_cluster_size', 'median_cluster_size', 'mean_cluster_size_P', 'geom_mean_cluster_size_P', 'median_cluster_size_P', 'mean_cluster_size_N', 'geom_mean_cluster_size_N', 'median_cluster_size_N', 'A_by_shortest_path_av_1', 'A_by_shortest_path_av_2', 'A_by_shortest_path_av_3', 'A_by_shortest_path_av_4', 'A_by_shortest_path_av_5', 'A_by_shortest_path_av_6', 'A_by_shortest_path_std_1', 'A_by_shortest_path_std_2', 'A_by_shortest_path_std_3', 'A_by_shortest_path_std_4', 'A_by_shortest_path_std_5', 'A_by_shortest_path_std_6', 'P_by_shortest_path_av_1', 'P_by_shortest_path_av_2', 'P_by_shortest_path_av_3', 'P_by_shortest_path_av_4', 'P_by_shortest_path_av_5', 'P_by_shortest_path_av_6', 'P_by_shortest_path_std_1', 'P_by_shortest_path_std_2', 'P_by_shortest_path_std_3', 'P_by_shortest_path_std_4', 'P_by_shortest_path_std_5', 'P_by_shortest_path_std_6', 'H_by_shortest_path_av_1', 'H_by_shortest_path_av_2', 'H_by_shortest_path_av_3', 'H_by_shortest_path_av_4', 'H_by_shortest_path_av_5', 'H_by_shortest_path_av_6', 'H_by_shortest_path_std_1', 'H_by_shortest_path_std_2', 'H_by_shortest_path_std_3', 'H_by_shortest_path_std_4', 'H_by_shortest_path_std_5', 'H_by_shortest_path_std_6', 'A_by_shortest_path_P_av_1', 'A_by_shortest_path_P_av_2', 'A_by_shortest_path_P_av_3', 'A_by_shortest_path_P_av_4', 'A_by_shortest_path_P_av_5', 'A_by_shortest_path_P_av_6', 'A_by_shortest_path_P_std_1', 'A_by_shortest_path_P_std_2', 'A_by_shortest_path_P_std_3', 'A_by_shortest_path_P_std_4', 'A_by_shortest_path_P_std_5', 'A_by_shortest_path_P_std_6', 'P_by_shortest_path_P_av_1', 'P_by_shortest_path_P_av_2', 'P_by_shortest_path_P_av_3', 'P_by_shortest_path_P_av_4', 'P_by_shortest_path_P_av_5', 'P_by_shortest_path_P_av_6', 'P_by_shortest_path_P_std_1', 'P_by_shortest_path_P_std_2', 'P_by_shortest_path_P_std_3', 'P_by_shortest_path_P_std_4', 'P_by_shortest_path_P_std_5', 'P_by_shortest_path_P_std_6', 'H_by_shortest_path_P_av_1', 'H_by_shortest_path_P_av_2', 'H_by_shortest_path_P_av_3', 'H_by_shortest_path_P_av_4', 'H_by_shortest_path_P_av_5', 'H_by_shortest_path_P_av_6', 'H_by_shortest_path_P_std_1', 'H_by_shortest_path_P_std_2', 'H_by_shortest_path_P_std_3', 'H_by_shortest_path_P_std_4', 'H_by_shortest_path_P_std_5', 'H_by_shortest_path_P_std_6', 'A_by_shortest_path_N_av_1', 'A_by_shortest_path_N_av_2', 'A_by_shortest_path_N_av_3', 'A_by_shortest_path_N_av_4', 'A_by_shortest_path_N_av_5', 'A_by_shortest_path_N_av_6', 'A_by_shortest_path_N_std_1', 'A_by_shortest_path_N_std_2', 'A_by_shortest_path_N_std_3', 'A_by_shortest_path_N_std_4', 'A_by_shortest_path_N_std_5', 'A_by_shortest_path_N_std_6', 'P_by_shortest_path_N_av_1', 'P_by_shortest_path_N_av_2', 'P_by_shortest_path_N_av_3', 'P_by_shortest_path_N_av_4', 'P_by_shortest_path_N_av_5', 'P_by_shortest_path_N_av_6', 'P_by_shortest_path_N_std_1', 'P_by_shortest_path_N_std_2', 'P_by_shortest_path_N_std_3', 'P_by_shortest_path_N_std_4', 'P_by_shortest_path_N_std_5', 'P_by_shortest_path_N_std_6', 'H_by_shortest_path_N_av_1', 'H_by_shortest_path_N_av_2', 'H_by_shortest_path_N_av_3', 'H_by_shortest_path_N_av_4', 'H_by_shortest_path_N_av_5', 'H_by_shortest_path_N_av_6', 'H_by_shortest_path_N_std_1', 'H_by_shortest_path_N_std_2', 'H_by_shortest_path_N_std_3', 'H_by_shortest_path_N_std_4', 'H_by_shortest_path_N_std_5', 'H_by_shortest_path_N_std_6', 'A_by_n_cc_av_1', 'A_by_n_cc_av_2', 'A_by_n_cc_av_3', 'A_by_n_cc_av_4', 'A_by_n_cc_av_5', 'A_by_n_cc_av_6', 'A_by_n_cc_av_7', 'A_by_n_cc_av_8', 'A_by_n_cc_std_1', 'A_by_n_cc_std_2', 'A_by_n_cc_std_3', 'A_by_n_cc_std_4', 'A_by_n_cc_std_5', 'A_by_n_cc_std_6', 'A_by_n_cc_std_7', 'A_by_n_cc_std_8', 'P_by_n_cc_av_1', 'P_by_n_cc_av_2', 'P_by_n_cc_av_3', 'P_by_n_cc_av_4', 'P_by_n_cc_av_5', 'P_by_n_cc_av_6', 'P_by_n_cc_av_7', 'P_by_n_cc_av_8', 'P_by_n_cc_std_1', 'P_by_n_cc_std_2', 'P_by_n_cc_std_3', 'P_by_n_cc_std_4', 'P_by_n_cc_std_5', 'P_by_n_cc_std_6', 'P_by_n_cc_std_7', 'P_by_n_cc_std_8', 'H_by_n_cc_av_1', 'H_by_n_cc_av_2', 'H_by_n_cc_av_3', 'H_by_n_cc_av_4', 'H_by_n_cc_av_5', 'H_by_n_cc_av_6', 'H_by_n_cc_av_7', 'H_by_n_cc_av_8', 'H_by_n_cc_std_1', 'H_by_n_cc_std_2', 'H_by_n_cc_std_3', 'H_by_n_cc_std_4', 'H_by_n_cc_std_5', 'H_by_n_cc_std_6', 'H_by_n_cc_std_7', 'H_by_n_cc_std_8', 'A_by_n_cc_P_av_1', 'A_by_n_cc_P_av_2', 'A_by_n_cc_P_av_3', 'A_by_n_cc_P_av_4', 'A_by_n_cc_P_av_5', 'A_by_n_cc_P_av_6', 'A_by_n_cc_P_av_7', 'A_by_n_cc_P_av_8', 'A_by_n_cc_P_std_1', 'A_by_n_cc_P_std_2', 'A_by_n_cc_P_std_3', 'A_by_n_cc_P_std_4', 'A_by_n_cc_P_std_5', 'A_by_n_cc_P_std_6', 'A_by_n_cc_P_std_7', 'A_by_n_cc_P_std_8', 'P_by_n_cc_P_av_1', 'P_by_n_cc_P_av_2', 'P_by_n_cc_P_av_3', 'P_by_n_cc_P_av_4', 'P_by_n_cc_P_av_5', 'P_by_n_cc_P_av_6', 'P_by_n_cc_P_av_7', 'P_by_n_cc_P_av_8', 'P_by_n_cc_P_std_1', 'P_by_n_cc_P_std_2', 'P_by_n_cc_P_std_3', 'P_by_n_cc_P_std_4', 'P_by_n_cc_P_std_5', 'P_by_n_cc_P_std_6', 'P_by_n_cc_P_std_7', 'P_by_n_cc_P_std_8', 'H_by_n_cc_P_av_1', 'H_by_n_cc_P_av_2', 'H_by_n_cc_P_av_3', 'H_by_n_cc_P_av_4', 'H_by_n_cc_P_av_5', 'H_by_n_cc_P_av_6', 'H_by_n_cc_P_av_7', 'H_by_n_cc_P_av_8', 'H_by_n_cc_P_std_1', 'H_by_n_cc_P_std_2', 'H_by_n_cc_P_std_3', 'H_by_n_cc_P_std_4', 'H_by_n_cc_P_std_5', 'H_by_n_cc_P_std_6', 'H_by_n_cc_P_std_7', 'H_by_n_cc_P_std_8', 'A_by_n_cc_N_av_1', 'A_by_n_cc_N_av_2', 'A_by_n_cc_N_av_3', 'A_by_n_cc_N_av_4', 'A_by_n_cc_N_av_5', 'A_by_n_cc_N_av_6', 'A_by_n_cc_N_av_7', 'A_by_n_cc_N_av_8', 'A_by_n_cc_N_std_1', 'A_by_n_cc_N_std_2', 'A_by_n_cc_N_std_3', 'A_by_n_cc_N_std_4', 'A_by_n_cc_N_std_5', 'A_by_n_cc_N_std_6', 'A_by_n_cc_N_std_7', 'A_by_n_cc_N_std_8', 'P_by_n_cc_N_av_1', 'P_by_n_cc_N_av_2', 'P_by_n_cc_N_av_3', 'P_by_n_cc_N_av_4', 'P_by_n_cc_N_av_5', 'P_by_n_cc_N_av_6', 'P_by_n_cc_N_av_7', 'P_by_n_cc_N_av_8', 'P_by_n_cc_N_std_1', 'P_by_n_cc_N_std_2', 'P_by_n_cc_N_std_3', 'P_by_n_cc_N_std_4', 'P_by_n_cc_N_std_5', 'P_by_n_cc_N_std_6', 'P_by_n_cc_N_std_7', 'P_by_n_cc_N_std_8', 'H_by_n_cc_N_av_1', 'H_by_n_cc_N_av_2', 'H_by_n_cc_N_av_3', 'H_by_n_cc_N_av_4', 'H_by_n_cc_N_av_5', 'H_by_n_cc_N_av_6', 'H_by_n_cc_N_av_7', 'H_by_n_cc_N_av_8', 'H_by_n_cc_N_std_1', 'H_by_n_cc_N_std_2', 'H_by_n_cc_N_std_3', 'H_by_n_cc_N_std_4', 'H_by_n_cc_N_std_5', 'H_by_n_cc_N_std_6', 'H_by_n_cc_N_std_7', 'H_by_n_cc_N_std_8'])
+                out_dict = dict(zip(keys,np.ones(len(keys))*np.nan))
+                out_dict["index"] = index
+            out_dict = extract_statistics(tissue_params,mesh_props,index)
+            out_dicts.append(out_dict)
+            print(i,tissue_params["L"])
+            # export_terminal(tissue_params,mesh_props,index,file_name)
+    fig, ax = plt.subplots()
+    ax.plot(np.linspace(0,1,5),np.flip(L_outs))
+    ax.set(xlabel="Relative Order",ylabel="Tissue Size")
+    fig.show()
+
+    A_vals = np.zeros((len(out_dicts),2))
+    L_vals = np.zeros((len(out_dicts)))
+
+    for i, out_dict in enumerate(out_dicts):
+        L = out_dict["L_equilib"]
+        A_vals[i,0] = out_dict["A_P_av"]*L**2
+        A_vals[i,1] = out_dict["A_N_av"]*L**2
+        L_vals[i] = L
+
+
+
+
     except:
         keys = list(["index",'L_equilib', 'total_positive_by_vertex_0', 'total_positive_by_vertex_1', 'total_positive_by_vertex_2', 'total_positive_by_vertex_3', 'A_av', 'A_P_av', 'A_N_av', 'A_std', 'A_P_std', 'A_N_std', 'P_av', 'P_P_av', 'P_N_av', 'P_std', 'P_P_std', 'P_N_std', 'H_av', 'H_P_av', 'H_N_av', 'H_std', 'H_P_std', 'H_N_std', 'ruggedness', 'z_by_positive_av_0', 'z_by_positive_av_1', 'z_by_positive_av_2', 'z_by_positive_av_3', 'z_by_positive_std_0', 'z_by_positive_std_1', 'z_by_positive_std_2', 'z_by_positive_std_3', 'n_notch_neighbours_count_0', 'n_notch_neighbours_count_1', 'n_notch_neighbours_count_2', 'n_notch_neighbours_count_3', 'n_notch_neighbours_count_4', 'n_notch_neighbours_count_5', 'n_notch_neighbours_count_6', 'n_notch_neighbours_count_7', 'n_notch_neighbours_count_8', 'n_notch_neighbours_count_9', 'n_notch_neighbours_count_P_0', 'n_notch_neighbours_count_P_1', 'n_notch_neighbours_count_P_2', 'n_notch_neighbours_count_P_3', 'n_notch_neighbours_count_N_0', 'n_notch_neighbours_count_N_1', 'n_notch_neighbours_count_N_2', 'n_notch_neighbours_count_N_3', 'A_by_notch_neighbours_av_0', 'A_by_notch_neighbours_av_1', 'A_by_notch_neighbours_av_2', 'A_by_notch_neighbours_av_3', 'A_by_notch_neighbours_av_4', 'A_by_notch_neighbours_av_5', 'A_by_notch_neighbours_av_6', 'A_by_notch_neighbours_av_7', 'A_by_notch_neighbours_av_8', 'A_by_notch_neighbours_av_9', 'A_by_notch_neighbours_std_0', 'A_by_notch_neighbours_std_1', 'A_by_notch_neighbours_std_2', 'A_by_notch_neighbours_std_3', 'A_by_notch_neighbours_std_4', 'A_by_notch_neighbours_std_5', 'A_by_notch_neighbours_std_6', 'A_by_notch_neighbours_std_7', 'A_by_notch_neighbours_std_8', 'A_by_notch_neighbours_std_9', 'P_by_notch_neighbours_av_0', 'P_by_notch_neighbours_av_1', 'P_by_notch_neighbours_av_2', 'P_by_notch_neighbours_av_3', 'P_by_notch_neighbours_av_4', 'P_by_notch_neighbours_av_5', 'P_by_notch_neighbours_av_6', 'P_by_notch_neighbours_av_7', 'P_by_notch_neighbours_av_8', 'P_by_notch_neighbours_av_9', 'P_by_notch_neighbours_std_0', 'P_by_notch_neighbours_std_1', 'P_by_notch_neighbours_std_2', 'P_by_notch_neighbours_std_3', 'P_by_notch_neighbours_std_4', 'P_by_notch_neighbours_std_5', 'P_by_notch_neighbours_std_6', 'P_by_notch_neighbours_std_7', 'P_by_notch_neighbours_std_8', 'P_by_notch_neighbours_std_9', 'H_by_notch_neighbours_av_0', 'H_by_notch_neighbours_av_1', 'H_by_notch_neighbours_av_2', 'H_by_notch_neighbours_av_3', 'H_by_notch_neighbours_av_4', 'H_by_notch_neighbours_av_5', 'H_by_notch_neighbours_av_6', 'H_by_notch_neighbours_av_7', 'H_by_notch_neighbours_av_8', 'H_by_notch_neighbours_av_9', 'H_by_notch_neighbours_std_0', 'H_by_notch_neighbours_std_1', 'H_by_notch_neighbours_std_2', 'H_by_notch_neighbours_std_3', 'H_by_notch_neighbours_std_4', 'H_by_notch_neighbours_std_5', 'H_by_notch_neighbours_std_6', 'H_by_notch_neighbours_std_7', 'H_by_notch_neighbours_std_8', 'H_by_notch_neighbours_std_9', 'A_by_notch_neighbours_P_av_0', 'A_by_notch_neighbours_P_av_1', 'A_by_notch_neighbours_P_av_2', 'A_by_notch_neighbours_P_av_3', 'A_by_notch_neighbours_P_av_4', 'A_by_notch_neighbours_P_av_5', 'A_by_notch_neighbours_P_av_6', 'A_by_notch_neighbours_P_av_7', 'A_by_notch_neighbours_P_av_8', 'A_by_notch_neighbours_P_av_9', 'A_by_notch_neighbours_P_std_0', 'A_by_notch_neighbours_P_std_1', 'A_by_notch_neighbours_P_std_2', 'A_by_notch_neighbours_P_std_3', 'A_by_notch_neighbours_P_std_4', 'A_by_notch_neighbours_P_std_5', 'A_by_notch_neighbours_P_std_6', 'A_by_notch_neighbours_P_std_7', 'A_by_notch_neighbours_P_std_8', 'A_by_notch_neighbours_P_std_9', 'P_by_notch_neighbours_P_av_0', 'P_by_notch_neighbours_P_av_1', 'P_by_notch_neighbours_P_av_2', 'P_by_notch_neighbours_P_av_3', 'P_by_notch_neighbours_P_av_4', 'P_by_notch_neighbours_P_av_5', 'P_by_notch_neighbours_P_av_6', 'P_by_notch_neighbours_P_av_7', 'P_by_notch_neighbours_P_av_8', 'P_by_notch_neighbours_P_av_9', 'P_by_notch_neighbours_P_std_0', 'P_by_notch_neighbours_P_std_1', 'P_by_notch_neighbours_P_std_2', 'P_by_notch_neighbours_P_std_3', 'P_by_notch_neighbours_P_std_4', 'P_by_notch_neighbours_P_std_5', 'P_by_notch_neighbours_P_std_6', 'P_by_notch_neighbours_P_std_7', 'P_by_notch_neighbours_P_std_8', 'P_by_notch_neighbours_P_std_9', 'H_by_notch_neighbours_P_av_0', 'H_by_notch_neighbours_P_av_1', 'H_by_notch_neighbours_P_av_2', 'H_by_notch_neighbours_P_av_3', 'H_by_notch_neighbours_P_av_4', 'H_by_notch_neighbours_P_av_5', 'H_by_notch_neighbours_P_av_6', 'H_by_notch_neighbours_P_av_7', 'H_by_notch_neighbours_P_av_8', 'H_by_notch_neighbours_P_av_9', 'H_by_notch_neighbours_P_std_0', 'H_by_notch_neighbours_P_std_1', 'H_by_notch_neighbours_P_std_2', 'H_by_notch_neighbours_P_std_3', 'H_by_notch_neighbours_P_std_4', 'H_by_notch_neighbours_P_std_5', 'H_by_notch_neighbours_P_std_6', 'H_by_notch_neighbours_P_std_7', 'H_by_notch_neighbours_P_std_8', 'H_by_notch_neighbours_P_std_9', 'A_by_notch_neighbours_N_av_0', 'A_by_notch_neighbours_N_av_1', 'A_by_notch_neighbours_N_av_2', 'A_by_notch_neighbours_N_av_3', 'A_by_notch_neighbours_N_av_4', 'A_by_notch_neighbours_N_av_5', 'A_by_notch_neighbours_N_av_6', 'A_by_notch_neighbours_N_av_7', 'A_by_notch_neighbours_N_av_8', 'A_by_notch_neighbours_N_av_9', 'A_by_notch_neighbours_N_std_0', 'A_by_notch_neighbours_N_std_1', 'A_by_notch_neighbours_N_std_2', 'A_by_notch_neighbours_N_std_3', 'A_by_notch_neighbours_N_std_4', 'A_by_notch_neighbours_N_std_5', 'A_by_notch_neighbours_N_std_6', 'A_by_notch_neighbours_N_std_7', 'A_by_notch_neighbours_N_std_8', 'A_by_notch_neighbours_N_std_9', 'P_by_notch_neighbours_N_av_0', 'P_by_notch_neighbours_N_av_1', 'P_by_notch_neighbours_N_av_2', 'P_by_notch_neighbours_N_av_3', 'P_by_notch_neighbours_N_av_4', 'P_by_notch_neighbours_N_av_5', 'P_by_notch_neighbours_N_av_6', 'P_by_notch_neighbours_N_av_7', 'P_by_notch_neighbours_N_av_8', 'P_by_notch_neighbours_N_av_9', 'P_by_notch_neighbours_N_std_0', 'P_by_notch_neighbours_N_std_1', 'P_by_notch_neighbours_N_std_2', 'P_by_notch_neighbours_N_std_3', 'P_by_notch_neighbours_N_std_4', 'P_by_notch_neighbours_N_std_5', 'P_by_notch_neighbours_N_std_6', 'P_by_notch_neighbours_N_std_7', 'P_by_notch_neighbours_N_std_8', 'P_by_notch_neighbours_N_std_9', 'H_by_notch_neighbours_N_av_0', 'H_by_notch_neighbours_N_av_1', 'H_by_notch_neighbours_N_av_2', 'H_by_notch_neighbours_N_av_3', 'H_by_notch_neighbours_N_av_4', 'H_by_notch_neighbours_N_av_5', 'H_by_notch_neighbours_N_av_6', 'H_by_notch_neighbours_N_av_7', 'H_by_notch_neighbours_N_av_8', 'H_by_notch_neighbours_N_av_9', 'H_by_notch_neighbours_N_std_0', 'H_by_notch_neighbours_N_std_1', 'H_by_notch_neighbours_N_std_2', 'H_by_notch_neighbours_N_std_3', 'H_by_notch_neighbours_N_std_4', 'H_by_notch_neighbours_N_std_5', 'H_by_notch_neighbours_N_std_6', 'H_by_notch_neighbours_N_std_7', 'H_by_notch_neighbours_N_std_8', 'H_by_notch_neighbours_N_std_9', 'mean_shortest_path', 'geom_mean_shortest_path', 'median_shortest_path', 'mean_shortest_path_P', 'geom_mean_shortest_path_P', 'median_shortest_path_P', 'mean_shortest_path_N', 'geom_mean_shortest_path_N', 'median_shortest_path_N', 'mean_cluster_size', 'geom_mean_cluster_size', 'median_cluster_size', 'mean_cluster_size_P', 'geom_mean_cluster_size_P', 'median_cluster_size_P', 'mean_cluster_size_N', 'geom_mean_cluster_size_N', 'median_cluster_size_N', 'A_by_shortest_path_av_1', 'A_by_shortest_path_av_2', 'A_by_shortest_path_av_3', 'A_by_shortest_path_av_4', 'A_by_shortest_path_av_5', 'A_by_shortest_path_av_6', 'A_by_shortest_path_std_1', 'A_by_shortest_path_std_2', 'A_by_shortest_path_std_3', 'A_by_shortest_path_std_4', 'A_by_shortest_path_std_5', 'A_by_shortest_path_std_6', 'P_by_shortest_path_av_1', 'P_by_shortest_path_av_2', 'P_by_shortest_path_av_3', 'P_by_shortest_path_av_4', 'P_by_shortest_path_av_5', 'P_by_shortest_path_av_6', 'P_by_shortest_path_std_1', 'P_by_shortest_path_std_2', 'P_by_shortest_path_std_3', 'P_by_shortest_path_std_4', 'P_by_shortest_path_std_5', 'P_by_shortest_path_std_6', 'H_by_shortest_path_av_1', 'H_by_shortest_path_av_2', 'H_by_shortest_path_av_3', 'H_by_shortest_path_av_4', 'H_by_shortest_path_av_5', 'H_by_shortest_path_av_6', 'H_by_shortest_path_std_1', 'H_by_shortest_path_std_2', 'H_by_shortest_path_std_3', 'H_by_shortest_path_std_4', 'H_by_shortest_path_std_5', 'H_by_shortest_path_std_6', 'A_by_shortest_path_P_av_1', 'A_by_shortest_path_P_av_2', 'A_by_shortest_path_P_av_3', 'A_by_shortest_path_P_av_4', 'A_by_shortest_path_P_av_5', 'A_by_shortest_path_P_av_6', 'A_by_shortest_path_P_std_1', 'A_by_shortest_path_P_std_2', 'A_by_shortest_path_P_std_3', 'A_by_shortest_path_P_std_4', 'A_by_shortest_path_P_std_5', 'A_by_shortest_path_P_std_6', 'P_by_shortest_path_P_av_1', 'P_by_shortest_path_P_av_2', 'P_by_shortest_path_P_av_3', 'P_by_shortest_path_P_av_4', 'P_by_shortest_path_P_av_5', 'P_by_shortest_path_P_av_6', 'P_by_shortest_path_P_std_1', 'P_by_shortest_path_P_std_2', 'P_by_shortest_path_P_std_3', 'P_by_shortest_path_P_std_4', 'P_by_shortest_path_P_std_5', 'P_by_shortest_path_P_std_6', 'H_by_shortest_path_P_av_1', 'H_by_shortest_path_P_av_2', 'H_by_shortest_path_P_av_3', 'H_by_shortest_path_P_av_4', 'H_by_shortest_path_P_av_5', 'H_by_shortest_path_P_av_6', 'H_by_shortest_path_P_std_1', 'H_by_shortest_path_P_std_2', 'H_by_shortest_path_P_std_3', 'H_by_shortest_path_P_std_4', 'H_by_shortest_path_P_std_5', 'H_by_shortest_path_P_std_6', 'A_by_shortest_path_N_av_1', 'A_by_shortest_path_N_av_2', 'A_by_shortest_path_N_av_3', 'A_by_shortest_path_N_av_4', 'A_by_shortest_path_N_av_5', 'A_by_shortest_path_N_av_6', 'A_by_shortest_path_N_std_1', 'A_by_shortest_path_N_std_2', 'A_by_shortest_path_N_std_3', 'A_by_shortest_path_N_std_4', 'A_by_shortest_path_N_std_5', 'A_by_shortest_path_N_std_6', 'P_by_shortest_path_N_av_1', 'P_by_shortest_path_N_av_2', 'P_by_shortest_path_N_av_3', 'P_by_shortest_path_N_av_4', 'P_by_shortest_path_N_av_5', 'P_by_shortest_path_N_av_6', 'P_by_shortest_path_N_std_1', 'P_by_shortest_path_N_std_2', 'P_by_shortest_path_N_std_3', 'P_by_shortest_path_N_std_4', 'P_by_shortest_path_N_std_5', 'P_by_shortest_path_N_std_6', 'H_by_shortest_path_N_av_1', 'H_by_shortest_path_N_av_2', 'H_by_shortest_path_N_av_3', 'H_by_shortest_path_N_av_4', 'H_by_shortest_path_N_av_5', 'H_by_shortest_path_N_av_6', 'H_by_shortest_path_N_std_1', 'H_by_shortest_path_N_std_2', 'H_by_shortest_path_N_std_3', 'H_by_shortest_path_N_std_4', 'H_by_shortest_path_N_std_5', 'H_by_shortest_path_N_std_6', 'A_by_n_cc_av_1', 'A_by_n_cc_av_2', 'A_by_n_cc_av_3', 'A_by_n_cc_av_4', 'A_by_n_cc_av_5', 'A_by_n_cc_av_6', 'A_by_n_cc_av_7', 'A_by_n_cc_av_8', 'A_by_n_cc_std_1', 'A_by_n_cc_std_2', 'A_by_n_cc_std_3', 'A_by_n_cc_std_4', 'A_by_n_cc_std_5', 'A_by_n_cc_std_6', 'A_by_n_cc_std_7', 'A_by_n_cc_std_8', 'P_by_n_cc_av_1', 'P_by_n_cc_av_2', 'P_by_n_cc_av_3', 'P_by_n_cc_av_4', 'P_by_n_cc_av_5', 'P_by_n_cc_av_6', 'P_by_n_cc_av_7', 'P_by_n_cc_av_8', 'P_by_n_cc_std_1', 'P_by_n_cc_std_2', 'P_by_n_cc_std_3', 'P_by_n_cc_std_4', 'P_by_n_cc_std_5', 'P_by_n_cc_std_6', 'P_by_n_cc_std_7', 'P_by_n_cc_std_8', 'H_by_n_cc_av_1', 'H_by_n_cc_av_2', 'H_by_n_cc_av_3', 'H_by_n_cc_av_4', 'H_by_n_cc_av_5', 'H_by_n_cc_av_6', 'H_by_n_cc_av_7', 'H_by_n_cc_av_8', 'H_by_n_cc_std_1', 'H_by_n_cc_std_2', 'H_by_n_cc_std_3', 'H_by_n_cc_std_4', 'H_by_n_cc_std_5', 'H_by_n_cc_std_6', 'H_by_n_cc_std_7', 'H_by_n_cc_std_8', 'A_by_n_cc_P_av_1', 'A_by_n_cc_P_av_2', 'A_by_n_cc_P_av_3', 'A_by_n_cc_P_av_4', 'A_by_n_cc_P_av_5', 'A_by_n_cc_P_av_6', 'A_by_n_cc_P_av_7', 'A_by_n_cc_P_av_8', 'A_by_n_cc_P_std_1', 'A_by_n_cc_P_std_2', 'A_by_n_cc_P_std_3', 'A_by_n_cc_P_std_4', 'A_by_n_cc_P_std_5', 'A_by_n_cc_P_std_6', 'A_by_n_cc_P_std_7', 'A_by_n_cc_P_std_8', 'P_by_n_cc_P_av_1', 'P_by_n_cc_P_av_2', 'P_by_n_cc_P_av_3', 'P_by_n_cc_P_av_4', 'P_by_n_cc_P_av_5', 'P_by_n_cc_P_av_6', 'P_by_n_cc_P_av_7', 'P_by_n_cc_P_av_8', 'P_by_n_cc_P_std_1', 'P_by_n_cc_P_std_2', 'P_by_n_cc_P_std_3', 'P_by_n_cc_P_std_4', 'P_by_n_cc_P_std_5', 'P_by_n_cc_P_std_6', 'P_by_n_cc_P_std_7', 'P_by_n_cc_P_std_8', 'H_by_n_cc_P_av_1', 'H_by_n_cc_P_av_2', 'H_by_n_cc_P_av_3', 'H_by_n_cc_P_av_4', 'H_by_n_cc_P_av_5', 'H_by_n_cc_P_av_6', 'H_by_n_cc_P_av_7', 'H_by_n_cc_P_av_8', 'H_by_n_cc_P_std_1', 'H_by_n_cc_P_std_2', 'H_by_n_cc_P_std_3', 'H_by_n_cc_P_std_4', 'H_by_n_cc_P_std_5', 'H_by_n_cc_P_std_6', 'H_by_n_cc_P_std_7', 'H_by_n_cc_P_std_8', 'A_by_n_cc_N_av_1', 'A_by_n_cc_N_av_2', 'A_by_n_cc_N_av_3', 'A_by_n_cc_N_av_4', 'A_by_n_cc_N_av_5', 'A_by_n_cc_N_av_6', 'A_by_n_cc_N_av_7', 'A_by_n_cc_N_av_8', 'A_by_n_cc_N_std_1', 'A_by_n_cc_N_std_2', 'A_by_n_cc_N_std_3', 'A_by_n_cc_N_std_4', 'A_by_n_cc_N_std_5', 'A_by_n_cc_N_std_6', 'A_by_n_cc_N_std_7', 'A_by_n_cc_N_std_8', 'P_by_n_cc_N_av_1', 'P_by_n_cc_N_av_2', 'P_by_n_cc_N_av_3', 'P_by_n_cc_N_av_4', 'P_by_n_cc_N_av_5', 'P_by_n_cc_N_av_6', 'P_by_n_cc_N_av_7', 'P_by_n_cc_N_av_8', 'P_by_n_cc_N_std_1', 'P_by_n_cc_N_std_2', 'P_by_n_cc_N_std_3', 'P_by_n_cc_N_std_4', 'P_by_n_cc_N_std_5', 'P_by_n_cc_N_std_6', 'P_by_n_cc_N_std_7', 'P_by_n_cc_N_std_8', 'H_by_n_cc_N_av_1', 'H_by_n_cc_N_av_2', 'H_by_n_cc_N_av_3', 'H_by_n_cc_N_av_4', 'H_by_n_cc_N_av_5', 'H_by_n_cc_N_av_6', 'H_by_n_cc_N_av_7', 'H_by_n_cc_N_av_8', 'H_by_n_cc_N_std_1', 'H_by_n_cc_N_std_2', 'H_by_n_cc_N_std_3', 'H_by_n_cc_N_std_4', 'H_by_n_cc_N_std_5', 'H_by_n_cc_N_std_6', 'H_by_n_cc_N_std_7', 'H_by_n_cc_N_std_8'])
 
@@ -551,4 +707,45 @@ if __name__ == "__main__":
     #mkdir("../results/export_dump")
     #mkdir("../results/statistics")
     #mkdir("../results/statistics_dump")
+
+
+"""
+The variances are tight, perhaps too tight. 
+When varying the connectivity, or 
+
+
+"""
+
+
+is_notch = np.zeros(169,dtype=int)
+is_notchs = np.zeros((16,169),dtype=int)
+for i in range(16):
+    is_notch[np.random.choice(np.where(is_notch==0)[0],10)]=1
+    is_notchs[i] = is_notch.copy()
+
+T_cortical, alpha, A0, p_notch, file_name, seed = (
+0.1909090909090909, 0.4545454545454546, 7.045454545454546, 0.3, 'results', 3)
+
+T_cortical /= 1.3
+
+L_range = np.linspace(20,50,50)
+E_vals = np.zeros((len(is_notchs),len(L_range)))
+for i, is_notch in tqdm(enumerate(is_notchs)):
+    T = np.ones(169)*T_cortical
+    T[is_notch.astype(bool)] *=alpha
+    _A0 = np.ones(169)*A0
+    for j, L in enumerate(L_range):
+        A = a*L**2
+        P = p*L
+        V = 1
+        H = V/A
+
+        E_vals[i,j] = (T*P + 0.02*(A-_A0)**2).sum()
+
+L_opts = np.zeros(len(E_vals))
+for i, E in enumerate(E_vals):
+    L_opts[i] =  L_range[np.argmin(E)]
+
+plt.plot(E_vals[:,:].T)
+plt.show()
 

@@ -18,6 +18,7 @@ import matplotlib
 import seaborn as sns
 import sys
 import matplotlib.pyplot as plt
+from itertools import combinations
 
 def mkdir(path):
     if not os.path.exists(path):
@@ -25,25 +26,30 @@ def mkdir(path):
 
 # T_cortical,alpha,A0,p_notch,file_name,seed = (0.3, 0.0, 6.454545454545455, 0.5, 'results', 3)
 
-def run_simulation(T_cortical,alpha,A0,p_notch,file_name,seed,index):
+def run_simulation(P0_N,P0_P,Text,p_notch,file_name,seed,index):
     try:
-        mesh_options = {"L": 18.4, "A_init": 2., "V_init": 1., "init_noise": 1e-1, "eps": 0.002, "l_mult": 1.05,"seed":seed+2024}
+
         tissue_options = {"kappa_A": (0.02, 0.02),
-                          "A0": (A0,A0),
-                          "T_lateral": (0., 0. * alpha),
-                          "T_cortical": (T_cortical,T_cortical * alpha),
-                          "T_basal": (0., 0.),
-                          "F_bend": (1., 1.),
-                          "T_external": 0.,
-                          "kappa_V": (3.0, 3.0),
+                          "kappa_P": (0.003, 0.003),
+                          "P0": (P0_N,P0_P),
+                          "A0": (1.,1.),
+                          "F_bend": (0.1,0.1),
+                          "kappa_V": (0.3,0.3),
                           "V0": (1.0, 1.0),
                           "p_notch": p_notch,
-                          "mu_L": 0.25,
-                          "L_min": 2.,
-                          "max_L_grad":100}
-        simulation_options = {"dt": 0.01,
-                              "tfin": 50,
-                              "t_skip": 1}
+                          "mu_l": 0.1,
+                          "L_min": 0.1,
+                          "L_max": 50,
+                          "T_external":-Text,
+                          "max_l_grad":10.}
+        simulation_options = {"dt": 0.02,
+                              "tfin": 1000,
+                              "t_skip": 500}
+
+        L = 10
+        mesh_options = {"L": L, "A_init": (L / 9.05) ** 2, "V_init": 1., "init_noise": 4e-1, "eps": 0.002, "l_mult": 1.05,
+                        "seed": seed}
+
         sim = Simulation(simulation_options, tissue_options, mesh_options)
         sim.simulate()
 
@@ -104,8 +110,6 @@ def get_graph_props(tissue_params,mesh_props):
     shortest_paths = np.array(shortest_paths)
 
     ##Calculate the adjacency matrix
-    adj = sparse.coo_matrix((np.ones(len(edges), dtype=int), (edges[:, 0], edges[:, 1])),
-                                               shape=(int(mesh_props["n_c"]), int(mesh_props["n_c"])))
 
     is_notch_int = tissue_params["is_notch"].astype(int)
     is_notch_edges = is_notch_int[edges]
@@ -473,75 +477,55 @@ def extract_statistics(tissue_params,mesh_props,index):
 
 if __name__ == "__main__":
 
-    N_param = 12
-    N_iter = 16
-    T_cortical_range = np.linspace(0,0.3,N_param)
-    alpha_range = np.linspace(0,1,N_param)
-    A0_range = np.linspace(3.5,10,N_param)
+    N_param = 10
+    N_iter = 10
+    P0_range = np.linspace(0,4.5,N_param)
+    T_ext_range = np.linspace(0,0.05,N_param)
     p_notch_range = np.linspace(0.05,0.95,N_param)
     seed_index = np.arange(N_iter)
 
-    TC,AL,A0,PN,S = np.array(np.meshgrid(T_cortical_range,alpha_range,A0_range,p_notch_range,seed_index,indexing="ij")).reshape(5,-1)
+    P0_P,P0_N,T_EX,PN,S = np.array(np.meshgrid(P0_range,P0_range,T_ext_range,p_notch_range,seed_index,indexing="ij")).reshape(5,-1)
+    mask = P0_P >= P0_N
+    P0_P,P0_N,T_EX,PN,S = P0_P[mask],P0_N[mask],T_EX[mask],PN,S[mask]
+
     S = S.astype(int)
     total_index = np.arange(len(S))
     slurm_index = int(sys.argv[1])
-    N_batch = 432
-    n_batches = 768
-    n_mini_batch = 64
+    N_batch = 100
+    n_batches = 550
+    n_mini_batch = 10
 
     range_to_index_total = np.arange(slurm_index*N_batch,(slurm_index+1)*N_batch)
     mkdir("../results/export_dump/batch_%d" % slurm_index)
     file_name = "../results/export_dump/batch_%d" % slurm_index
-    run_parallel = False
-    shuffle = True
-    full_manual = True
-    if full_manual:
-        mini_batch_list = np.arange(n_mini_batch)
-        if shuffle:
-            np.random.shuffle(mini_batch_list)
+    run_parallel = True
+    shuffle = False
 
-        for i in mini_batch_list:
-            if not os.path.exists("../results/statistics_dump/batch_%d_%d.csv" % (slurm_index, i)):
-                range_to_index = range_to_index_total[i::n_mini_batch]
-                if shuffle:
-                    np.random.shuffle(range_to_index)
-                TC_i = TC[range_to_index]
-                AL_i = AL[range_to_index]
-                A0_i = A0[range_to_index]
-                PN_i = PN[range_to_index]
-                S_i = S[range_to_index]
-                total_index_i = total_index[range_to_index]
+    mini_batch_list = np.arange(n_mini_batch)
+    if shuffle:
+        np.random.shuffle(mini_batch_list)
 
-                for (T_cortical, alpha, _A0, p_notch, seed, index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i):
-                    if not os.path.exists("../results/statistics_dump/index_%d.csv" % (index)):
-                        out_dict = run_simulation(T_cortical, alpha, _A0, p_notch, file_name, seed, index)
-                        df_out = pd.DataFrame(out_dict,index=[0])
-                        df_out.to_csv("../results/statistics_dump/index_%d.csv" % (index))
-    else:
+    for i in mini_batch_list:
+        if not os.path.exists("../results/statistics_dump/batch_%d_%d.csv"%(slurm_index,i)):
+            range_to_index = range_to_index_total[i::n_mini_batch]
+            if shuffle:
+                np.random.shuffle(range_to_index)
+            P0_N_i = P0_N[range_to_index]
+            P0_P_i = P0_P[range_to_index]
+            T_EX_i = T_EX[range_to_index]
+            PN_i= PN[range_to_index]
+            S_i = S[range_to_index]
+            total_index_i = total_index[range_to_index]
+            if run_parallel:
+                out_dicts = Parallel(n_jobs=-1)(delayed(run_simulation)(P0n,P0p,Tex,p_notch,file_name,seed,index) for (P0n,P0p,Tex,p_notch,seed,index) in zip(P0_N_i,P0_P_i,T_EX_i, PN_i, S_i,total_index_i))
+            else:
+                out_dicts = []
+                for (P0n,P0p,Tex,p_notch,file_name,seed,index) in zip(P0_N_i,P0_P_i,T_EX_i, PN_i, S_i,total_index_i):
+                    out_dicts += [run_simulation(P0n,P0p,Tex,p_notch,file_name,seed,index)]
+            df_out = pd.DataFrame(out_dicts)
+            df_out.to_csv("../results/statistics_dump/all_batch_%d_%d.csv"%(slurm_index,i))
+            df_out[["index","L_equilib","A_av","A_P_av","A_N_av"]].to_csv("../results/statistics_dump/summary_batch_%d_%d.csv"%(slurm_index,i))
 
-        mini_batch_list = np.arange(n_mini_batch)
-        if shuffle:
-            np.random.shuffle(mini_batch_list)
-
-        for i in mini_batch_list:
-            if not os.path.exists("../results/statistics_dump/batch_%d_%d.csv"%(slurm_index,i)):
-                range_to_index = range_to_index_total[i::n_mini_batch]
-                if shuffle:
-                    np.random.shuffle(range_to_index)
-                TC_i = TC[range_to_index]
-                AL_i = AL[range_to_index]
-                A0_i = A0[range_to_index]
-                PN_i= PN[range_to_index]
-                S_i = S[range_to_index]
-                total_index_i = total_index[range_to_index]
-                if run_parallel:
-                    out_dicts = Parallel(n_jobs=-1)(delayed(run_simulation)(T_cortical,alpha,A0,p_notch,file_name,seed,index) for (T_cortical,alpha,A0,p_notch,seed,index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i))
-                else:
-                    out_dicts = []
-                    for (T_cortical,alpha,_A0,p_notch,seed,index) in zip(TC_i, AL_i, A0_i, PN_i, S_i,total_index_i):
-                        out_dicts += [run_simulation(T_cortical,alpha,_A0,p_notch,file_name,seed,index)]
-                df_out = pd.DataFrame(out_dicts)
-                df_out.to_csv("../results/statistics_dump/batch_%d_%d.csv"%(slurm_index,i))
     #
     # os.system("tar -zcvf -r ../results/export/batch_%d.tar.gz ../results/export_dump/batch_%d"%(slurm_index,slurm_index))
     # os.system("rm -R ../results/export_dump/batch_%d"%(slurm_index,slurm_index))
@@ -551,4 +535,6 @@ if __name__ == "__main__":
     #mkdir("../results/export_dump")
     #mkdir("../results/statistics")
     #mkdir("../results/statistics_dump")
+
+
 

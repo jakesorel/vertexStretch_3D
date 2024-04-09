@@ -30,6 +30,8 @@ class Tissue:
 
         self.mesh = Mesh(mesh_options)
         self.tissue_options = tissue_options
+        if "max_L_grad" not in self.tissue_options:
+            self.tissue_options["max_L_grad"] = 100
         self.tissue_params = {}
         self.effective_tissue_params = {}
         self.jac = None
@@ -83,18 +85,22 @@ class Tissue:
         self.tissue_params["mu_L"] = self.tissue_options["mu_L"]
         self.tissue_params["T_external"] = self.tissue_options["T_external"]
         self.tissue_params["L"] = self.true_mesh_options["L"]
+        self.tissue_params["L0"] = self.true_mesh_options["L"]
         self.effective_tissue_params = self.tissue_params.copy()
 
     def update_effective_tissue_params(self):
         ##prefix parameters are rescaled by 1/L^2 to account for the effective damping coefficient of 1/L^2
-        self.effective_tissue_params["kappa_V"] = self.tissue_params["kappa_V"]*self.effective_tissue_params["L"]**4
+        # self.effective_tissue_params["kappa_V"] = self.tissue_params["kappa_V"]*self.effective_tissue_params["L"]**4
+        self.effective_tissue_params["kappa_V"] = self.tissue_params["kappa_V"]*self.effective_tissue_params["L"]**2 * self.tissue_params["L0"]**2
         self.effective_tissue_params["kappa_A"] = self.tissue_params["kappa_A"]*self.effective_tissue_params["L"]**2
         self.effective_tissue_params["T_cortical"] = self.tissue_params["T_cortical"]/self.effective_tissue_params["L"]
 
         ##Note that T_lateral and T_basal are the same upon rescaling and damping coefficient factoring L^2/L^2 = 1
 
         ##These are not scaled by damping coefficients
-        self.effective_tissue_params["V0"] = self.tissue_params["V0"]/self.effective_tissue_params["L"]**3
+        # self.effective_tissue_params["V0"] = self.tissue_params["V0"]/self.effective_tissue_params["L"]**3
+        self.effective_tissue_params["V0"] = self.tissue_params["V0"]/(self.effective_tissue_params["L"]**2*self.tissue_params["L0"])
+
         self.effective_tissue_params["A0"] = self.tissue_params["A0"]/self.effective_tissue_params["L"]**2
 
         ##F_bend considers angles and is thus scale free.
@@ -104,7 +110,11 @@ class Tissue:
     #     print(self.effective_tissue_params["L"])
 
     def update_L(self,dt):
-        self.effective_tissue_params["L"] += - dt*self.effective_tissue_params["mu_L"]*dE_dL(self.effective_tissue_params["L"],self.mesh.mesh_props,self.tissue_params)
+        dedl = dE_dL(self.effective_tissue_params["L"], self.mesh.mesh_props, self.tissue_params)
+        dedl = jnp.clip(dedl,-self.tissue_options["max_L_grad"],self.tissue_options["max_L_grad"])
+        self.effective_tissue_params["L"] += - dt*self.effective_tissue_params["mu_L"]*dedl
+
+        # self.effective_tissue_params["L"] += - dt*self.effective_tissue_params["mu_L"]*dE_dL(self.effective_tissue_params["L"],self.mesh.mesh_props,self.tissue_params)
         if self.effective_tissue_params["L"] < self.tissue_options["L_min"]:
             self.effective_tissue_params["L"] = self.tissue_options["L_min"]
         self.update_effective_tissue_params()
@@ -112,7 +122,11 @@ class Tissue:
     def update_x(self,X,dt):
         F = -self.jac(X,self.mesh.mesh_props,int(self.mesh.mesh_props["n_c"]),self.effective_tissue_params)
         X += dt*F
+        Xz = X[...,2]
+        Xz = Xz.at[Xz<0].set(1e-5)
+        X = jnp.column_stack([X[...,:2],Xz]) ##prevent z extent from going above the 0 line
         X = jnp.mod(X,1.)
+
         return X
 
     def update(self,X,dt):
@@ -154,7 +168,11 @@ def dE_dL(L,mesh_props,tissue_params):
     ab = mesh_props["A_basal"]
     v = mesh_props["V"]
     p = mesh_props["P_apical"]
-    dE_dLi =  p*Tcortical + 2*L*(2*a**2*ka*L**2 + ab*Tb + a*(-2*A0*ka + Tex) + al*Tl + 3*kv*L*v*(L**3*v - V0))
+    h = tissue_params["L0"]
+    # dE_dLi =  p*Tcortical + 2*L*(2*a**2*ka*L**2 + ab*Tb + a*(-2*A0*ka + Tex) + al*Tl + 3*kv*L*v*(L**3*v - V0))
+    dE_dLi = p * Tcortical + 2 * L * (
+                2 * a ** 2 * ka * L ** 2 + ab * Tb + a * (-2 * A0 * ka + Tex) + al * Tl + 2 * h * kv * v * (
+                    h * L ** 2 * v - V0))
     return dE_dLi.sum()
 
 

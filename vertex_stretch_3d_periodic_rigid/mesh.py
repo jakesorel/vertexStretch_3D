@@ -323,18 +323,18 @@ def get_A_basal(mesh_props, nc):
 
     return mesh_props
 
-
-@partial(jit, static_argnums=(1,))
-def get_phi(mesh_props, nc):
-    """
-    Sum of angles of the basal triangles, centred on the projected 2D centre of mass
-    """
-    cos_phi_t = (mesh_props["X_R"] * mesh_props["Xp1_R"]).sum(axis=-1) / (
-            jnp.linalg.norm(mesh_props["X_R"], axis=-1) * jnp.linalg.norm(mesh_props["Xp1_R"], axis=-1))
-    phi_t = jnp.arccos(cos_phi_t)
-    phi = assemble_scalar(phi_t, mesh_props["tri"], int(nc))
-    mesh_props["phi"] = phi
-    return mesh_props
+#
+# @partial(jit, static_argnums=(1,))
+# def get_phi(mesh_props, nc):
+#     """
+#     Sum of angles of the basal triangles, centred on the projected 2D centre of mass
+#     """
+#     cos_phi_t = (mesh_props["X_R"] * mesh_props["Xp1_R"]).sum(axis=-1) / (
+#             jnp.linalg.norm(mesh_props["X_R"], axis=-1) * jnp.linalg.norm(mesh_props["Xp1_R"], axis=-1))
+#     phi_t = jnp.arccos(cos_phi_t)
+#     phi = assemble_scalar(phi_t, mesh_props["tri"], int(nc))
+#     mesh_props["phi"] = phi
+#     return mesh_props
 
 
 @partial(jit, static_argnums=(1,))
@@ -534,7 +534,7 @@ def _get_geometry(mesh_props, nc):
     mesh_props["Xp1_R"] = periodic_displacement(mesh_props["Xp1"], mesh_props["tR"], mesh_props["L"])
 
     mesh_props = get_A_basal(mesh_props, nc)
-    mesh_props = get_phi(mesh_props, nc)
+    # mesh_props = get_phi(mesh_props, nc)
     mesh_props = get_V(mesh_props, nc)
     mesh_props = get_A_lateral(mesh_props, nc)
 
